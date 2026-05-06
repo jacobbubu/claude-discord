@@ -1,0 +1,14 @@
+{
+  "name": "8-plist-signing",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "verify": "bun run verify.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
