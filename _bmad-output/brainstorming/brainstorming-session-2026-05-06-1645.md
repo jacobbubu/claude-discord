@@ -191,12 +191,21 @@ context_file: 'docs/research/reference-plugin-capabilities.md'
 - `/last` 命令切回上一个 workspace（覆盖"两个 workspace 反复切"场景）
 - 不做"最近用 button 快捷栏"——后续可加
 
-**Lark UX = React emoji 触发（B）**：
+**Lark UX = React emoji 触发（B）** ~~（brief 终审被推翻，见下方"决策反转"）~~：
 
 - 用户对包含文件的 bot 消息 react 一个特定 emoji（如 📤）
 - bot 监听 react 触发上传
 - 优势：事后操作（消息已发出也能用）；上行成本低；不污染消息 UI
 - 待澄清子问题：Lark 上传成功后，bot 怎么把链接送回？编辑原消息追加？回复原消息？另发新消息？
+
+**决策反转：Lark Drive 集成移出 MVP（2026-05-06 brief 终审）**：
+
+- 用户在 brief 终审时决定 "lark drive 的支持应该拿掉"
+- 移出 In scope，移入 Out of scope（标 day-2 扩展可考虑）
+- 上面 Lark UX / Lark 触发条件等讨论留作历史记录，但不影响 MVP 范围
+- 服务的人画像同步移除 "用飞书做团队协作"
+- 成功标准里"Lark 上传成功率"指标替换为"`/recent` 上下文回看体感恰到好处"
+- 差异化表格里 "Lark 集成"行替换为 "Workspace 容量管理"
 
 ---
 

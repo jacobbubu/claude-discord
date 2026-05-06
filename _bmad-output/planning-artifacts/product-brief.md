@@ -39,7 +39,6 @@ issue: jacobbubu/claude-discord#3
 - 你打 `/list` 看到当前在线的 6 个 workspace（按注册时间倒序），找到 `myproject`。
 - `/use myproject` → channel topic 改写，bot 回 "✅ switched to myproject"。
 - "帮我看下 server.ts 里的那个超时逻辑"——消息走到 myproject 这个 CC session，Claude 处理，输出走线程回复（细节）+ 一条主消息（结论）。
-- 想把生成的设计文档发给同事？对那条消息 react 一个 📤，bot 上传到飞书 Drive，把链接编辑回原消息。
 - 中午到公司换桌面继续，Discord 状态完全延续——daemon 没动过，workspace 全都还在线。
 - 切到另一个项目：`/use bar`，topic 变了，从此这个 channel 上全发给 `bar`，直到下一次 `/use`。
 - 晚上想接着上午的 myproject 思路继续？`/use myproject`，bot 自动展示 myproject 自己的最近 3 条消息（带原始时间戳），上下文一眼回笼——不用去翻 channel 历史里其他 workspace 的对话杂音。
@@ -52,8 +51,8 @@ issue: jacobbubu/claude-discord#3
 | --- | --- | --- | --- |
 | 进程模型 | 每 session 一个子进程 | 单 daemon 多 channel | **单 daemon 单 channel 多 workspace** |
 | Channel 数量 | 1 bot 服务 N channel | 各种 channel 都接 | M < N，**channel 是槽位** |
-| 切换 workspace UX | 没这概念（1:1） | 多种 channel 各自有 | **`/use` + `/last` 显式切换** |
-| Lark 集成 | 无 | 通用 Lark plugin | **Discord ⇄ Lark 深度路径**（react 触发） |
+| 切换 workspace UX | 没这概念（1:1） | 多种 channel 各自有 | **`/use` + `/last` + `/recent` 显式切换与上下文回看** |
+| Workspace 容量管理 | 无（每 session 一个进程） | gateway 级 | **soft cap + LRU 自愈再注册** |
 | 安装 | per-session MCP | daemon-install-plan | **抄 openclaw 套路，scope 收紧** |
 | 多 agent 支持 | Claude only | 多 agent | **协议留扩展点，day 1 Claude only** |
 
@@ -66,8 +65,7 @@ issue: jacobbubu/claude-discord#3
 - 自己一个人持有 1-3 个 Claude 订阅 / 账号；
 - 经常在地铁、咖啡馆、不同电脑之间切换工作场景；
 - 对开发者 CLI 工具有耐心（`launchctl`、`brew services`、命令行 install 不会劝退）；
-- 已经在用 Discord 作为个人通讯/小组工具；
-- 用飞书做团队协作（Lark Drive 集成对他们是真需求）。
+- 已经在用 Discord 作为个人通讯/小组工具。
 
 **不服务的人**：
 
@@ -94,7 +92,7 @@ issue: jacobbubu/claude-discord#3
 2. **Workspace 注册延迟**：CC 启动到 `/list` 里出现 < 3 秒。
 3. **`/use` 切换响应**：< 1 秒收到 "✅ switched"。
 4. **离线检测**：CC 退出到 daemon 标离线 < 5 秒。
-5. **Lark 上传成功率**：在网络正常时 > 95%。
+5. **`/recent` 上下文回看**：切换时条件性自动展示在 90% 的场景下被用户认为"恰到好处"（不冗余、不缺席），凭主观判断。
 6. **零数据丢失**：normal ops 下不丢消息（异常下要明确告知）。
 7. **作者自用满意度**：作者本人放弃 raw `claude` + 原版 plugin，全切到 claude-discord 做日常。
 
@@ -110,7 +108,6 @@ issue: jacobbubu/claude-discord#3
 - Channel topic + 切换状态消息
 - 上游 5 个 MCP 工具的等价实现（reply / react / edit_message / fetch_messages / download_attachment）
 - 长内容展示规约（线程/附件/embed/edit）
-- Lark Drive 集成（react 触发，opt-in）
 - Discord 权限问答（按钮 + `yes XXXXX` 文本）
 - 沿用上游的 pairing/allowlist 鉴权
 - launchd / systemd 安装脚本
@@ -125,6 +122,7 @@ issue: jacobbubu/claude-discord#3
 - 多用户协作权限模型
 - 跨平台 hub（不再做 telegram / slack / signal 那些）
 - 远程 daemon（daemon 必须和 CC 在同一台机器）
+- 外部存储集成（飞书 Drive / Google Drive 等）——MVP 范围外，可作为 day-2 扩展
 
 ## 关键假设与待回答
 
@@ -135,7 +133,6 @@ issue: jacobbubu/claude-discord#3
 5. **Audit / 日志**：要不要做本机 JSONL 审计流？brainstorming 时未深入。
 6. **BMAD 联动**：研究文档候选过"BMAD 工作流挂钩"——保留可能性，但 MVP 不实现。
 7. **异常自愈**：CC 崩、daemon 崩、网络断时的具体策略——PRD/架构阶段细化。
-8. **Lark 深度**：auth 方式、文件夹路由、命名约定——MVP 取最简（一个 token、一个 folder），后续再丰富。
 
 ## 三年愿景
 
