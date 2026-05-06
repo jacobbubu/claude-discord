@@ -258,7 +258,7 @@ Guild 频道**默认关闭**，必须按 channel ID（不是 guild ID）逐个 o
 
 - **审计与归档**：把消息流落到本地 SQLite，提供 `/discord:logs <since>` 类 skill。
 - **多账号路由**：一个 Claude Code session 同时桥接多个 Bot/账号（不只是多实例），按 `chat_id` 分发。
-- **与 BMAD/OMC 工作流挂钩**：把 `bmad-create-prd` 等长任务的进度直接通过 Discord 推送给负责人；或者把 Discord 上的需求评论作为 BMAD 输入材料。
+- **与 BMAD 工作流挂钩**：把 `bmad-create-prd` 等长任务的进度直接通过 Discord 推送给负责人；或者把 Discord 上的需求评论作为 BMAD 输入材料。
 - **离线/异步任务回执**：长跑任务结束后，即便 Claude Code session 已经关掉，也能通过持久化任务表恢复并补发结果。
 - **企业内部部署友好性**：proxy、自签证书、最小权限的 Bot 应用脚本化创建。
 
