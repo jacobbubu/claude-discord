@@ -1,0 +1,15 @@
+{
+  "name": "7-launchd-socket",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "verify": "bun run verify.ts",
+    "daemon": "bun run daemon-stub.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
