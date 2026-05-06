@@ -39,7 +39,31 @@ claude-discord 是一台 machine-level 的 agent gateway daemon，把开发者�
 
 **三年**：成为"个人开发者多 agent 多 workspace 远程操作"这一品类的 reference implementation——它到了那里，意味着我们没成为 openclaw 的子集，而是探出了"窄而深"的另一条路。
 
-## 4. Target Users & Personas
+## 4. 成功标准
+
+MVP（Day 90）算成功的判据，分量化与非量化两类。量化指标用于 soak / e2e 测试与回归看板；非量化判据需要事后主观回顾，但不可以省。
+
+### 量化指标
+
+| # | 指标 | 目标 | 测量方式 |
+| --- | --- | --- | --- |
+| SC-1 | Daemon 稳定性 | 连续运行 7 天无需 kill -9 | 7 天 soak test 不重启 |
+| SC-2 | Workspace 注册延迟 | CC 启动到 `/list` 里出现 < 3 秒 | 端到端计时 |
+| SC-3 | `/use` 切换响应 | < 1 秒收到 "✅ switched" | Discord 消息时间戳差 |
+| SC-4 | 离线检测延迟 | CC 退出到 daemon 视图标离线 < 5 秒 | 日志时间戳差 |
+| SC-5 | `/recent` 上下文回看体感 | 90% 场景下用户判定"恰到好处"（不冗余、不缺席） | 自用记录 |
+| SC-6 | 零数据丢失 | normal ops 下不丢消息（异常下要明确告知） | 完整 e2e 回归 |
+
+### 非量化判据
+
+| # | 判据 | 说明 |
+| --- | --- | --- |
+| SC-7 | 作者自用满意度 | 作者本人放弃 raw `claude` + 原版 plugin，全切到 claude-discord 做日常 |
+| SC-8 | 第二个用户出现 | 朋友 / 关注的开发者愿意自己装、用一周、提 issue——这条比所有量化指标都更重要：它是"问题真不真"的最终判据 |
+
+NFR-1（性能） 与 §13 Roadmap 的里程碑里相同的数字会以"执行细节"形式重复出现，但 SC-1 至 SC-8 才是定义"什么算 MVP 完成"的契约。
+
+## 5. Target Users & Personas
 
 ### 主要用户：拥有 3+ 活跃 CC 项目的资深独立开发者
 
@@ -55,7 +79,7 @@ claude-discord 是一台 machine-level 的 agent gateway daemon，把开发者�
 - 只有 1 个项目的轻度用户（上游插件已经够用）
 - 不熟悉命令行 install 的纯 GUI 用户（MVP 阶段）
 
-## 5. Differentiation
+## 6. Differentiation
 
 | | 上游官方插件 | openclaw | claude-discord |
 | --- | --- | --- | --- |
@@ -68,7 +92,7 @@ claude-discord 是一台 machine-level 的 agent gateway daemon，把开发者�
 
 护城河是"聚焦"：openclaw 因为接得多，每个 channel 都只能做到中位；我们因为只接 Discord，能把 Discord 的 slash 命令、按钮、react、thread、embed 这些原生能力榨干到 openclaw 没空做的程度。
 
-## 6. User Journeys
+## 7. User Journeys
 
 ### J1：典型一天
 
@@ -112,7 +136,7 @@ claude-discord 是一台 machine-level 的 agent gateway daemon，把开发者�
 - 手机 DM bot → 上游 pairing 流程 → `claude-discord-bot pair <code>` 批准 → 进入许可
 - 至此从手机能 `/use <workspace>` 操作
 
-## 7. Domain Model & Glossary
+## 8. Domain Model & Glossary
 
 | 术语 | 定义 |
 | --- | --- |
@@ -128,7 +152,7 @@ claude-discord 是一台 machine-level 的 agent gateway daemon，把开发者�
 | **Allowlist** | Discord user ID 白名单，沿用上游 `access.json` 设计；DM 路径必经 |
 | **Pairing** | 首次未知 user DM bot → 回 6 hex 配对码 → 用户在终端 `claude-discord-bot pair <code>` 批准 |
 
-## 8. Project Type & Constraints
+## 9. Project Type & Constraints
 
 - **Greenfield**：从零重写，不 fork 上游
 - **License**：MIT
@@ -138,7 +162,7 @@ claude-discord 是一台 machine-level 的 agent gateway daemon，把开发者�
 - **运行时**：Node 或 Bun（架构阶段决定）
 - **协议透明度**：plugin↔daemon 协议 day 1 引入 version + capabilities + agent 字段，预留 Codex / 其他 agent 接入
 
-## 9. Scope
+## 10. Scope
 
 ### In Scope（MVP，Day 90 必须有）
 
@@ -169,7 +193,7 @@ claude-discord 是一台 machine-level 的 agent gateway daemon，把开发者�
 - thread 隔离 / 自动 archive（历史交错是 feature）
 - Windows 平台 MVP 支持
 
-## 10. Functional Requirements
+## 11. Functional Requirements
 
 下表中 **P0** = MVP 必须；**P1** = MVP 应当（90% 完成度即可发）；**P2** = post-MVP。**作者建议优先级，待你调整**。
 
@@ -188,7 +212,7 @@ claude-discord 是一台 machine-level 的 agent gateway daemon，把开发者�
 
 | ID | Story | 验收标准 | 优先级 |
 | --- | --- | --- | --- |
-| FR-2.1 | CC 启动时 plugin 自动连接 daemon | 默认 socket 路径（如 `~/.claude/channels/discord/daemon.sock`）；连接失败时退化为有限重试，不阻塞 CC 启动 | P0 |
+| FR-2.1 | CC 启动时 plugin 自动连接 daemon | 默认连接路径在状态目录下；具体 transport 类型由架构阶段决定；连接失败时退化为有限重试，不阻塞 CC 启动 | P0 |
 | FR-2.2 | 握手时报 workspace 标识 | 取 `cwd` 的 basename；daemon 端撞名时返回追加序号的 final name；plugin 接受并 cache | P0 |
 | FR-2.3 | 心跳 | 每 N 秒（如 10s）发一次心跳；超时由 daemon 端判定 | P0 |
 | FR-2.4 | 自动 reconnect | socket 断开（含被驱逐）时，按指数退避重连（含上限）；重连后重新握手 | P0 |
@@ -309,10 +333,10 @@ claude-discord 是一台 machine-level 的 agent gateway daemon，把开发者�
 | FR-13.1 | `claude-discord-bot configure <token>` 写 token | mkdir + 写 `.env` + chmod 600；幂等 | P0 |
 | FR-13.2 | `claude-discord-bot install` 写 launchd plist (macOS) | 探测 OS → 生成 plist 模板 → 写 `~/Library/LaunchAgents/` → `launchctl load` → 验证 | P0 |
 | FR-13.3 | `claude-discord-bot install` 写 systemd unit (Linux) | 写 `~/.config/systemd/user/` → `systemctl --user enable --now` → 验证 | P0 |
-| FR-13.4 | 安装脚本风格对标 openclaw `daemon-install-plan` | 实现路径：plan → apply → verify；含 dry-run 选项 | P1 |
+| FR-13.4 | 安装脚本支持预演与原子失败 | `--dry-run` 选项打印将执行的操作但不写文件 / 不调 launchctl；apply 失败时回滚已做改动，不留半态（实现路径可参考 openclaw `daemon-install-plan`） | P1 |
 | FR-13.5 | `claude-discord-bot uninstall` 反向 | 移除 plist / unit；停服务；幂等 | P0 |
 
-## 11. Non-functional Requirements
+## 12. Non-functional Requirements
 
 ### NFR-1 性能
 
@@ -378,7 +402,7 @@ claude-discord 是一台 machine-level 的 agent gateway daemon，把开发者�
 - E2E：从 CC 启动到手机 DM 路由到回复的完整链路（参考 openclaw 的 launchd integration test 思路）
 - Live：用真实 Discord bot + 真实 CC 跑端到端
 
-## 12. Open Questions / 留给架构阶段
+## 13. Open Questions / 留给架构阶段
 
 1. **CC `--channels` 协议下能否拿到自启时机让 plugin 主动连 daemon？** 架构阶段必须验证；若不行，需要替代方案（如 `--mcp-config` 走自定义 MCP server，或者 fallback 到 spawn 子进程）
 2. **Plugin↔Daemon 传输协议**：Unix domain socket / TCP localhost / MCP-over-socket？倾向 Unix socket（无端口冲突、本地 only）
@@ -388,7 +412,7 @@ claude-discord 是一台 machine-level 的 agent gateway daemon，把开发者�
 6. **Discord rate limit 命中时的退化策略**：纯排队 vs 排队 + 提示用户 vs ?
 7. **运行时**：Node 18+ vs Bun？取决于 plugin SDK 在 CC 那侧能跑哪个
 
-## 13. Roadmap / Milestones
+## 14. Roadmap / Milestones
 
 ### Day 30：骨架可跑
 
