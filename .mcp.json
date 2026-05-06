@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "claude-discord": {
+      "command": "bun",
+      "args": ["run", "${CLAUDE_PLUGIN_ROOT}/src/plugin/index.ts"]
+    }
+  }
+}
