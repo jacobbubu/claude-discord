@@ -12,4 +12,9 @@ coverage/
 
 # Local agent / session state — never commit
 .omc/
-.claude/
+
+# Claude Code workspace — track BMAD skills, ignore local session state
+.claude/cache/
+.claude/sessions/
+.claude/state/
+.claude/local/
