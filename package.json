@@ -1,0 +1,29 @@
+{
+  "name": "claude-discord-bot",
+  "version": "0.0.1",
+  "description": "A Claude Code Discord plugin — machine-level agent gateway daemon for Discord × Claude Code",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "bin": {
+    "claude-discord-bot": "./src/cli/index.ts"
+  },
+  "scripts": {
+    "start": "bun run src/cli/index.ts start",
+    "dev": "bun --watch src/cli/index.ts start",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build src/cli/index.ts --target=bun --outdir=dist",
+    "check": "bun run typecheck && bun run test"
+  },
+  "dependencies": {
+    "commander": "^14.0.3",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.0",
+    "vitest": "^4.0.0"
+  }
+}
