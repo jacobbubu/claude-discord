@@ -320,3 +320,39 @@ on /use foo:
 - `/recent [N]` — **新增**，默认 3，N max = 5，列当前 workspace 的最近 N 条消息
 - `/status [workspace]` — 在线/离线状态
 
+---
+
+### 概念 #7 — Daemon 注册表容量与 LRU 驱逐（2026-05-06 用户原话）
+
+> "还需要一个 deamon 自动清理机制，就是其维护的 workspace 是有上限的，例如 50，超过了就会自动挤出最长不活跃的 workspace，但是这就需要当这个 workspace 重新活跃时，自动重新注册。"
+
+**问题本质**：daemon 不能无界增长——开发者偶尔会 spawn 一堆短命 CC 进程做实验，daemon 内存里挂 500 条注册表 + 500 个 ring buffer 就失控了。
+
+**决定**：
+
+- **Soft cap = 50**：触发 trim 时降到 45，留 5 个缓冲位避免每次注册都 LRU 比较的开销
+- **LRU 驱逐策略**：每个 workspace 维护 `last_activity_ts`（任意方向消息都触发更新），cap 触发时按 ts 升序驱逐到 45
+- **驱逐 = 内存清理**：丢注册表条目 + 丢 ring buffer + **关闭 socket**（让 plugin 立刻看到 disconnect）
+- **不杀 CC 进程**：daemon 只管自己的 view，不影响用户机器上的 CC 生命周期
+- **完全静默**：不发 Discord 消息，stderr 不警告，仅在 daemon 日志里记录
+- **routing.json 不受影响**：channel→workspace 名字的绑定持久化，被驱逐 workspace 仍然能在 routing.json 里找到自己的 channel 绑定，等 plugin 重连后无缝恢复
+
+**自愈再注册路径**：
+
+- Plugin 看到 socket disconnect → 触发内置 reconnect 逻辑（指数退避或下次有输出时）
+- 重连后重新握手报上 workspace 标识 → daemon 加回注册表
+- 用户视角：被驱逐 workspace 短暂从 `/list` 消失，下次活动时自动回来
+- 用户在已绑该 workspace 的 channel 里发消息时如果 plugin 还没重连：bot 走 Q5 离线逻辑回 "foo 当前离线"，与"CC 真的退出了"无差别
+
+**配置**：
+
+- `CLAUDE_DISCORD_WORKSPACE_CAP` 环境变量可调整 soft cap（默认 50，下界 10，上界 500）
+- `CLAUDE_DISCORD_WORKSPACE_TRIM_TARGET` 调整 trim 目标（默认 45）
+- 不暴露给 Discord slash 命令（这是运维而非用户命令）
+
+**对早先决定的影响**：
+
+- 与 K（在线检测 = stdio + 心跳）一致——心跳的"活跃信号"同时刷新 LRU
+- 与 ring buffer（concept #6）一致——驱逐时一并清理
+- 不与任何已有决策冲突
+

@@ -84,6 +84,7 @@ issue: jacobbubu/claude-discord#3
 - **状态文件**：`~/.claude/channels/discord/routing.json`（路由）+ `access.json`（许可，沿用上游设计）+ `.env`（token），权限 `0o600`。
 - **限流**：daemon 内部对 Discord API 调用做集中排队，避免多 CC 同时输出时打爆 Discord rate limits。
 - **消息回看（per-workspace 环形缓冲）**：daemon 内每个 workspace 留 50 条最近交互的内存 ring buffer（含原始 timestamp、channel id、方向），daemon 重启即丢，不持久化。`/recent N` 命令读取展示，`/use` 切换时按必要性算法（时间阈值 15 分钟、同 channel 跳过、空 buffer 跳过）条件性自动展示。这条同时为日后扩展成持久化 audit log 留了路径。
+- **Daemon 注册表容量**：soft cap 50 个活动 workspace（可由 `CLAUDE_DISCORD_WORKSPACE_CAP` 调整）。超出时按 LRU 驱逐到 45，被驱逐 workspace 的 socket 关闭，plugin 自动 reconnect 重新注册。完全静默（无 Discord 噪声、仅 daemon 日志记录）。routing.json 不受影响——驱逐只清内存 view，不动持久化绑定。
 
 ## 成功标准
 
