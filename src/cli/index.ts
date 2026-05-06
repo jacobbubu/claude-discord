@@ -2,25 +2,31 @@
 /**
  * claude-discord-bot CLI entry.
  *
- * Slice 1 implements: start / configure
- * Subcommand stubs registered for: dev / reset / stop / restart / logs /
- *   install / uninstall / status / pair / deny / allow / remove / policy /
- *   group / set
- *
- * The stubs print "not implemented in slice 1" so the help surface accurately
- * advertises the eventual command set without misleading anyone.
+ * Slice 3 status:
+ *   ✓ start, configure (slice 1)
+ *   ✓ pair, deny, allow, remove, policy, group add/rm, set (slice 3)
+ *   ⏳ dev / reset / stop / restart / logs / install / uninstall / status (slice 4/5)
  */
 
 import { Command } from 'commander'
+import {
+  cmdAllow,
+  cmdDeny,
+  cmdGroupAdd,
+  cmdGroupRm,
+  cmdPair,
+  cmdPolicy,
+  cmdRemove,
+  cmdSet,
+  cmdStatus as cmdAccessStatus,
+} from './access-mutate.ts'
 import { configure } from './configure.ts'
 import { start } from './start.ts'
 
 const program = new Command()
 program
   .name('claude-discord-bot')
-  .description(
-    'machine-level agent gateway daemon for Discord × Claude Code',
-  )
+  .description('machine-level agent gateway daemon for Discord × Claude Code')
   .version('0.0.1')
 
 program.command('start').description('run daemon in foreground').action(() => start())
@@ -31,33 +37,86 @@ program
   .argument('<token>', 'Discord bot token from Developer Portal')
   .action((token: string) => configure(token))
 
-const notYet = (name: string) => () => {
-  process.stderr.write(`${name} is not implemented in slice 1; see issue #11 follow-up slices.\n`)
-  process.exit(2)
-}
-program.command('dev').description('foreground daemon with file watch (Slice 5)').action(notYet('dev'))
-program.command('reset').description('clear state then start (Slice 5)').action(notYet('reset'))
-program.command('stop').description('stop service (Slice 5)').action(notYet('stop'))
-program.command('restart').description('stop + start (Slice 5)').action(notYet('restart'))
-program.command('logs').description('tail daemon logs (Slice 5)').action(notYet('logs'))
-program.command('install').description('register service via launchd / systemd (Slice 5)').action(notYet('install'))
-program.command('uninstall').description('remove service (Slice 5)').action(notYet('uninstall'))
-program.command('status').description('show daemon health (Slice 4)').action(notYet('status'))
-program.command('pair').description('approve a pairing code (Slice 3)').argument('<code>').action(notYet('pair'))
-program.command('deny').description('reject a pairing code (Slice 3)').argument('<code>').action(notYet('deny'))
-program.command('allow').description('add user to allowlist (Slice 3)').argument('<senderId>').action(notYet('allow'))
-program.command('remove').description('remove user from allowlist (Slice 3)').argument('<senderId>').action(notYet('remove'))
-program.command('policy').description('set DM policy (Slice 3)').argument('<mode>').action(notYet('policy'))
+// Access subcommands (slice 3)
+program
+  .command('pair')
+  .description('approve a pairing code (writes allowFrom + IPC for daemon to send Paired!)')
+  .argument('<code>', '6-hex pairing code from inbound DM')
+  .action((code: string) => cmdPair(code))
 
-const groupCmd = program.command('group').description('guild channel opt-in (Slice 3)')
-groupCmd.command('add').argument('<channelId>').action(notYet('group add'))
-groupCmd.command('rm').argument('<channelId>').action(notYet('group rm'))
+program
+  .command('deny')
+  .description('discard a pending pairing code without notifying sender')
+  .argument('<code>')
+  .action((code: string) => cmdDeny(code))
+
+program
+  .command('allow')
+  .description('add a Discord user snowflake to allowFrom directly')
+  .argument('<senderId>', 'Discord user snowflake (numeric)')
+  .action((id: string) => cmdAllow(id))
+
+program
+  .command('remove')
+  .description('remove a Discord user snowflake from allowFrom')
+  .argument('<senderId>')
+  .action((id: string) => cmdRemove(id))
+
+program
+  .command('policy')
+  .description('set DM policy: pairing | allowlist | disabled')
+  .argument('<mode>')
+  .action((mode: string) => cmdPolicy(mode))
+
+const groupCmd = program
+  .command('group')
+  .description('guild channel opt-in (subcommands: add | rm)')
+
+groupCmd
+  .command('add')
+  .description('enable a guild channel; flags: --no-mention, --allow id1,id2')
+  .argument('<channelId>', 'Discord channel snowflake (numeric)')
+  .option('--no-mention', 'process every message in the channel (skip mention requirement)')
+  .option('--allow <ids>', 'comma-separated user snowflakes that can trigger the bot in this channel')
+  .action((channelId: string, opts: { mention?: boolean; allow?: string }) => {
+    cmdGroupAdd(channelId, {
+      noMention: opts.mention === false,
+      allow: opts.allow
+        ? opts.allow
+            .split(',')
+            .map(s => s.trim())
+            .filter(Boolean)
+        : undefined,
+    })
+  })
+
+groupCmd
+  .command('rm')
+  .description('disable a guild channel')
+  .argument('<channelId>')
+  .action((channelId: string) => cmdGroupRm(channelId))
 
 program
   .command('set')
-  .description('configure delivery key (Slice 3)')
+  .description('configure delivery key: ackReaction | replyToMode | textChunkLimit | chunkMode | mentionPatterns')
   .argument('<key>')
   .argument('<value>')
-  .action(notYet('set'))
+  .action((key: string, value: string) => cmdSet(key, value))
+
+// Slice 4/5 subcommands stubbed for help-surface honesty.
+const notYet = (name: string, slice: string) => () => {
+  process.stderr.write(`${name} is not implemented yet (lands in ${slice}).\n`)
+  process.exit(2)
+}
+
+program.command('access').description('show access summary').action(() => cmdAccessStatus())
+program.command('dev').description('foreground daemon with file watch (Slice 5)').action(notYet('dev', 'Slice 5'))
+program.command('reset').description('clear state then start (Slice 5)').action(notYet('reset', 'Slice 5'))
+program.command('stop').description('stop service (Slice 5)').action(notYet('stop', 'Slice 5'))
+program.command('restart').description('stop + start (Slice 5)').action(notYet('restart', 'Slice 5'))
+program.command('logs').description('tail daemon logs (Slice 5)').action(notYet('logs', 'Slice 5'))
+program.command('install').description('register service via launchd / systemd (Slice 5)').action(notYet('install', 'Slice 5'))
+program.command('uninstall').description('remove service (Slice 5)').action(notYet('uninstall', 'Slice 5'))
+program.command('status').description('show daemon health (Slice 4)').action(notYet('status', 'Slice 4'))
 
 program.parseAsync(process.argv)

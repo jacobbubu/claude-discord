@@ -1,20 +1,30 @@
 /**
- * Daemon entry — slice 2.
+ * Daemon entry — slice 3.
  *
- * Initializes state directory, starts socket-server, then idles until
- * SIGTERM/SIGINT/stdin EOF. Discord client lands in slice 3.
+ * Pipeline at startup:
+ *   initStateDir → start socket-server (plugin side) → start discord-gateway
+ *   → wire inbound handler → start approval-watcher → idle until shutdown.
+ *
+ * Shutdown order (matters):
+ *   socket-server bye-broadcast & close → discord-gateway destroy → exit.
  */
 
-import { chmodSync, existsSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync } from 'node:fs'
+import { ChannelType } from 'discord.js'
 import { initStateDir } from '../shared/init-state-dir.ts'
 import { log } from '../shared/logger.ts'
 import { resolvePaths } from '../shared/paths.ts'
+import { startApprovalWatcher } from './approval-watcher.ts'
+import { startDiscordGateway } from './discord-gateway.ts'
+import { makeInboundHandler } from './inbound-router.ts'
 import { WorkspaceRegistry } from './registry.ts'
+import { RoutingTable } from './routing.ts'
 import { startSocketServer } from './socket-server.ts'
 
 export async function runDaemon(): Promise<void> {
   const paths = resolvePaths()
   initStateDir(paths)
+  mkdirSync(paths.approvedDir, { recursive: true, mode: 0o700 })
 
   if (existsSync(paths.envFile)) {
     try {
@@ -25,15 +35,41 @@ export async function runDaemon(): Promise<void> {
   }
 
   const registry = new WorkspaceRegistry()
+  const routing = new RoutingTable(paths.routingFile)
   const sockServer = startSocketServer(paths, registry)
+
+  const gateway = await startDiscordGateway(paths)
+
+  if (gateway) {
+    const handler = makeInboundHandler({
+      accessFile: paths.accessFile,
+      gateway,
+      registry,
+      routing,
+    })
+    gateway.client.on('messageCreate', msg => {
+      if (msg.author.bot) return
+      if (msg.channel.type === ChannelType.DM) {
+        gateway.noteDmRecipient(msg.channelId, msg.author.id)
+      }
+      handler(msg)
+    })
+  } else {
+    log.warn(
+      'discord gateway not started — daemon runs without Discord (configure token to enable)',
+    )
+  }
+
+  const approvalWatcher = startApprovalWatcher(paths.approvedDir, async ({ chatId }) => {
+    if (gateway) {
+      await gateway.send(chatId, 'Paired! Say hi to Claude.')
+    } else {
+      log.warn(`approval-watcher: no gateway, can't send Paired! confirmation for ${chatId}`)
+    }
+  })
 
   log.info(`daemon started — state dir: ${paths.stateDir}`)
   log.info(`pid=${process.pid} uid=${process.getuid?.()}`)
-  if (existsSync(paths.envFile)) {
-    log.info('.env present')
-  } else {
-    log.warn('.env not present — run "claude-discord-bot configure <token>" first')
-  }
 
   let resolveExit: () => void
   const exitPromise = new Promise<void>(r => {
@@ -45,9 +81,11 @@ export async function runDaemon(): Promise<void> {
     if (shuttingDown) return
     shuttingDown = true
     log.info(`received ${signal}, shutting down`)
+    approvalWatcher.stop()
     void sockServer
       .close()
       .catch(e => log.error(`socket server close failed: ${e}`))
+      .then(() => (gateway ? gateway.shutdown() : undefined))
       .finally(() => resolveExit())
   }
   process.on('SIGTERM', () => onShutdown('SIGTERM'))
