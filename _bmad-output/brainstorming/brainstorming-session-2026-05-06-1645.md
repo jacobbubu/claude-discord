@@ -270,3 +270,53 @@ context_file: 'docs/research/reference-plugin-capabilities.md'
 - **架构形态对齐**：daemon + plugin-sdk + cli installer + launchd 整套模式直接对标 openclaw，install 脚本、launchd plist 模板、状态命令的实现都可以参考 openclaw 现成路线
 - **不与 openclaw 直接竞争**：openclaw 是"我啥都接"，我们是"Discord 接 Claude 接到极致"。两者用户重叠但定位互补
 
+---
+
+### 概念 #6 — 切回 workspace 的上下文回看 ⭐（2026-05-06 用户原话）
+
+> "切换 workspace 的时候，如何以合理的方式，显示之前的一小段消息？例如增加一个指令显示 /last 5？而且带上每一条消息当时的时间"
+
+**问题本质**：channel-as-slot 模型下，`/use foo` 切回去时，**channel 历史是其他 workspace 的对话**——用户最需要的是 foo 自己的最近上下文。
+
+**决定**：
+
+- **新增 `/recent N`** slash 命令——和 `/last`（切回上一个 workspace）解耦，避免重载
+- **N max = 5**，默认 3
+- **持久化策略 A：内存环形缓冲（不落盘）**——daemon 内每个 workspace 留 50 条最近交互（含 user→workspace 与 workspace→user 双向、原始 timestamp、原始 channel id），daemon 重启即丢
+- **`/use` 切换时 C：条件性主动展示**——按必要性算法决定要不要自动给上下文，避免噪声
+
+**必要性算法**：
+
+```
+on /use foo:
+    buf = ring_buffer[foo]
+    if buf is empty:                                  → skip + "(no recent activity)"
+    if now - last_activity < 15min (THRESHOLD_RECENT) → skip
+    if last_channel == current_channel                → skip（向上滚就能看到）
+    else                                              → 展示最近 3 条，带原始时间戳
+```
+
+**展示格式**：使用 Discord 原生 `<t:UNIX:R>` 渲染相对时间 + 绝对时间，不重新发明时间戳格式。
+
+**对早期"不做 audit / log 子系统"决定的影响**：
+
+- 这是**软化**而非推翻：本质是 in-memory ring buffer，不持久化、不查询接口、无审计语义
+- 但它给"日后扩展为持久化 audit log"留了清晰路径（环形缓冲 → 滚动 JSONL → 查询接口）
+- MVP 阶段定位为"切换体验组件"，不是"审计组件"
+
+**与 H 决定（历史交错 = feature）的关系**：
+
+- H 仍然成立——channel 历史是混的，是个槽位的物理事实
+- `/recent` 引入了**第二个时间维度**——基于 workspace 的逻辑历史
+- 用户体感：channel 是物理时间线（混着），`/recent` 是 workspace 视角的逻辑时间线（自己的）
+- 两条时间线互不干扰；用户需要哪种就用哪种
+
+**slash 命令清单更新**：
+
+- `/use <workspace>` — 切换
+- `/last` — 切回上一个 workspace（**保持**原义，不重载成 `/last N`）
+- `/list` — 列出所有活动 workspace（时间倒序）
+- `/which` — 查当前 channel 的绑定
+- `/recent [N]` — **新增**，默认 3，N max = 5，列当前 workspace 的最近 N 条消息
+- `/status [workspace]` — 在线/离线状态
+
