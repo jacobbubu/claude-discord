@@ -78,7 +78,10 @@ export class MockPlugin {
       this.serverCapabilities = ack.server_capabilities
       return { ok: true, workspace: ack.workspace }
     }
-    return { ok: false, reason: ack.reason }
+    if (ack.type === 'register_reject') {
+      return { ok: false, reason: ack.reason }
+    }
+    throw new Error(`unexpected register response: ${ack.type}`)
   }
 
   /** Send a NDJSON message to the daemon. */

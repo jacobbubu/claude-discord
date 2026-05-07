@@ -20,8 +20,8 @@
  */
 
 import { spawn } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { writeAccessFile } from '../../access-control.ts'
@@ -30,6 +30,27 @@ import { buildHarness, type Harness } from '../controlled-e2e/_harness.ts'
 const REPO = resolve(__dirname, '../../../..')
 const PLUGIN_ENTRY = join(REPO, 'src/plugin/index.ts')
 
+// Fixed cwd so claude's session jsonl lands in a predictable project dir
+// (~/.claude/projects/<encoded>/...). Encoded path = absolute cwd with `/`
+// replaced by `-`. Tracked via .gitignore.
+const LIVE_CWD = join(REPO, '.live-claude-cwd')
+
+function encodeProjectDir(absPath: string): string {
+  return absPath.replace(/\//g, '-')
+}
+
+/** Newest jsonl in ~/.claude/projects/<encoded(LIVE_CWD)>/ since `since` ms. */
+function findLatestSessionJsonl(since: number): string | null {
+  const dir = join(homedir(), '.claude', 'projects', encodeProjectDir(LIVE_CWD))
+  if (!existsSync(dir)) return null
+  const entries = readdirSync(dir)
+    .filter(n => n.endsWith('.jsonl'))
+    .map(n => ({ path: join(dir, n), mtime: statSync(join(dir, n)).mtimeMs }))
+    .filter(e => e.mtime >= since)
+    .sort((a, b) => b.mtime - a.mtime)
+  return entries[0]?.path ?? null
+}
+
 // `it.skipIf` keeps the test skipped (not silent) when the flag is off.
 const ENABLED = process.env.CLAUDE_DISCORD_LIVE === '1'
 
@@ -37,7 +58,7 @@ const wait = (ms: number) => new Promise(r => setTimeout(r, ms))
 
 describe('live e2e — real claude CLI driver', () => {
   let h: Harness
-  let workCwd = ''
+  let runStart = 0
 
   beforeEach(async () => {
     h = await buildHarness()
@@ -47,17 +68,28 @@ describe('live e2e — real claude CLI driver', () => {
       groups: {},
       pending: {},
     })
-    workCwd = mkdtempSync(join(tmpdir(), 'live-claude-'))
+    mkdirSync(LIVE_CWD, { recursive: true })
     h.client.ensureDmChannel('u-1')
+    runStart = Date.now()
   })
 
   afterEach(async () => {
     await h.shutdown()
+    if (ENABLED) {
+      const session = findLatestSessionJsonl(runStart)
+      // process.stderr bypasses vitest's console buffer so the path is
+      // visible in CI logs and `bun test` output without --reporter=verbose.
+      const sessionId = session?.match(/([^/]+)\.jsonl$/)?.[1] ?? ''
+      const msg = session
+        ? `\n[live-e2e] claude session jsonl:\n  ${session}\n  resume: (cd ${LIVE_CWD} && claude --resume ${sessionId})\n`
+        : `\n[live-e2e] (no session jsonl found under ${LIVE_CWD})\n`
+      process.stderr.write(msg)
+    }
   })
 
   it.skipIf(!ENABLED)('claude --print → reply tool → mock channel', async () => {
-    // Write a per-test MCP config pointing absolute paths at our plugin
-    // and threading the harness socket via env.
+    // Per-test MCP config — absolute path to our plugin entry, harness
+    // socket threaded via env.
     const mcpConfig = {
       mcpServers: {
         'claude-discord': {
@@ -69,7 +101,7 @@ describe('live e2e — real claude CLI driver', () => {
         },
       },
     }
-    const mcpConfigPath = join(workCwd, 'mcp.json')
+    const mcpConfigPath = join(LIVE_CWD, 'mcp.json')
     writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2))
 
     const prompt =
@@ -82,7 +114,7 @@ describe('live e2e — real claude CLI driver', () => {
       'claude',
       ['--print', '--dangerously-skip-permissions', '--mcp-config', mcpConfigPath],
       {
-        cwd: workCwd,
+        cwd: LIVE_CWD,
         env: {
           ...process.env,
           CLAUDE_DISCORD_SOCKET: h.paths.socketPath,
