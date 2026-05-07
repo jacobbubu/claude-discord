@@ -50,13 +50,19 @@ describe('controlled e2e — multi-workspace', () => {
 
     const fooMsg = await foo.waitFor(m => m.type === 'inbound')
     const barMsg = await bar.waitFor(m => m.type === 'inbound')
-    if (fooMsg.type === 'inbound') expect(fooMsg.content).toBe('for foo')
-    if (barMsg.type === 'inbound') expect(barMsg.content).toBe('for bar')
+    if (fooMsg.type !== 'inbound') throw new Error(`expected inbound, got ${fooMsg.type}`)
+    if (barMsg.type !== 'inbound') throw new Error(`expected inbound, got ${barMsg.type}`)
+    expect(fooMsg.content).toBe('for foo')
+    expect(barMsg.content).toBe('for bar')
 
-    // Cross-talk check: foo only saw "for foo", not "for bar"
+    // Cross-talk check: foo only saw "for foo", not "for bar". Length must
+    // be non-zero (otherwise `.every` is vacuously true and the cross-talk
+    // assertion would be a no-op).
     const fooInbounds = foo.receivedOfType('inbound')
+    expect(fooInbounds.length).toBeGreaterThanOrEqual(1)
     expect(fooInbounds.every(m => m.content === 'for foo')).toBe(true)
     const barInbounds = bar.receivedOfType('inbound')
+    expect(barInbounds.length).toBeGreaterThanOrEqual(1)
     expect(barInbounds.every(m => m.content === 'for bar')).toBe(true)
   })
 

@@ -56,7 +56,8 @@ describe('controlled e2e — plugin reconnect', () => {
     h.routing.set('dm-u-1', 'foo')
     h.client.injectMessage({ userId: 'u-1', content: 'after reconnect', isDM: true })
     const inbound = await b.waitFor(m => m.type === 'inbound')
-    if (inbound.type === 'inbound') expect(inbound.content).toBe('after reconnect')
+    if (inbound.type !== 'inbound') throw new Error(`expected inbound, got ${inbound.type}`)
+    expect(inbound.content).toBe('after reconnect')
 
     await b.close()
   })

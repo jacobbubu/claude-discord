@@ -47,37 +47,65 @@ describe('controlled e2e — access policy', () => {
       groups: {},
       pending: {},
     })
+    h.routing.set('dm-u-allowed', 'foo')
 
-    // stranger → silent drop
+    // Inject the gated stranger first, then a sentinel that *should* pass
+    // the gate. When the sentinel arrives at the plugin we know the gate
+    // check for the prior stranger has run — assert the stranger DM has no
+    // bot reply (silent drop). This is stronger than a fixed-window wait.
     h.client.injectMessage({ userId: 'u-stranger', content: 'hi', isDM: true })
-    await wait(20)
-    // No bot message in stranger's DM
+    h.client.injectMessage({ userId: 'u-allowed', content: 'hi paired', isDM: true })
+
+    const inbound = await plugin.waitFor(m => m.type === 'inbound')
+    if (inbound.type !== 'inbound') throw new Error(`expected inbound, got ${inbound.type}`)
+    expect(inbound.content).toBe('hi paired')
+
     const strangerDm = h.client.allChannels.get('dm-u-stranger')
     const strangerBotMsgs = strangerDm?.history.filter(m => m.author.bot) ?? []
     expect(strangerBotMsgs.length).toBe(0)
-
-    // allowed → routes to plugin
-    h.routing.set('dm-u-allowed', 'foo')
-    h.client.injectMessage({ userId: 'u-allowed', content: 'hi paired', isDM: true })
-    const inbound = await plugin.waitFor(m => m.type === 'inbound')
-    if (inbound.type === 'inbound') expect(inbound.content).toBe('hi paired')
   })
 
   it('disabled policy: drops everything including allowFrom', async () => {
+    // Step 1: disabled — inject DM, daemon should drop it silently.
     writeAccessFile(h.paths.accessFile, {
       dmPolicy: 'disabled',
       allowFrom: ['u-allowed'],
       groups: {},
       pending: {},
     })
+    h.client.injectMessage({ userId: 'u-allowed', content: 'should-be-dropped', isDM: true })
 
-    h.client.injectMessage({ userId: 'u-allowed', content: 'hi', isDM: true })
-    await wait(50)
+    // Step 2: flip policy to allowlist and send a sentinel DM. inbound-router
+    // reads access.json fresh per message; the disabled-policy gate runs
+    // synchronously to `drop` (no awaits in handle for that branch), so by
+    // the time we inject the sentinel the prior message has already been
+    // dropped. Once sentinel arrives at plugin, we can assert nothing else
+    // for this DM channel reached it.
+    writeAccessFile(h.paths.accessFile, {
+      dmPolicy: 'allowlist',
+      allowFrom: ['u-allowed'],
+      groups: {},
+      pending: {},
+    })
+    h.client.ensureDmChannel('u-allowed')
+    h.routing.set('dm-u-allowed', 'foo')
+    h.client.injectMessage({ userId: 'u-allowed', content: 'sentinel', isDM: true })
 
+    const sentinel = await plugin.waitFor(
+      m => m.type === 'inbound' && m.content === 'sentinel',
+    )
+    expect(sentinel.type).toBe('inbound')
+
+    // Disabled policy is silent — no DM bot reply.
     const dm = h.client.allChannels.get('dm-u-allowed')
     const botMsgs = dm?.history.filter(m => m.author.bot) ?? []
     expect(botMsgs.length).toBe(0)
-    // Plugin should not have received any inbound either
-    expect(plugin.receivedOfType('inbound')).toHaveLength(0)
+
+    // Only the sentinel reached the plugin; the disabled-policy DM did not.
+    const dmInbounds = plugin
+      .receivedOfType('inbound')
+      .filter(m => m.chat_id === 'dm-u-allowed')
+    expect(dmInbounds).toHaveLength(1)
+    expect(dmInbounds[0]!.content).toBe('sentinel')
   })
 })

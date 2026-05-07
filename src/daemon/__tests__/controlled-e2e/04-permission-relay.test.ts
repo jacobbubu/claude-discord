@@ -5,8 +5,6 @@
  *   2. Daemon DMs the allowFrom user with buttons + "yes abcde" instructions
  *   3. We inject DM "yes abcde" from the same user
  *   4. Daemon claims pending, dispatches `permission` (allow) back to plugin
- *
- * Also covers the mismatched-id branch: text "yes zzzzz" with no pending.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -53,16 +51,20 @@ describe('controlled e2e — permission relay (text)', () => {
     const dm = h.client.allChannels.get('dm-u-1')
     expect(dm).toBeDefined()
     const dmBotMsgs = dm!.history.filter(m => m.author.bot)
-    expect(dmBotMsgs.some(m => m.content.includes('Permission'))).toBe(true)
+    const promptMsg = dmBotMsgs.find(m => m.content.includes('Permission'))
+    expect(promptMsg).toBeDefined()
+    // The DM prompt should surface the tool name and request_id so the user
+    // can decide and reply by id.
+    expect(promptMsg!.content).toContain('Bash')
+    expect(promptMsg!.content).toContain('abcde')
 
     // User replies with "yes abcde"
     h.client.injectMessage({ userId: 'u-1', content: 'yes abcde', isDM: true })
 
     const perm = await plugin.waitFor(m => m.type === 'permission')
-    if (perm.type === 'permission') {
-      expect(perm.request_id).toBe('abcde')
-      expect(perm.behavior).toBe('allow')
-    }
+    if (perm.type !== 'permission') throw new Error(`expected permission, got ${perm.type}`)
+    expect(perm.request_id).toBe('abcde')
+    expect(perm.behavior).toBe('allow')
   })
 
   it('"no <code>" from allowed user → plugin receives deny', async () => {
@@ -77,9 +79,8 @@ describe('controlled e2e — permission relay (text)', () => {
     h.client.injectMessage({ userId: 'u-1', content: 'no mnopq', isDM: true })
 
     const perm = await plugin.waitFor(m => m.type === 'permission')
-    if (perm.type === 'permission') {
-      expect(perm.request_id).toBe('mnopq')
-      expect(perm.behavior).toBe('deny')
-    }
+    if (perm.type !== 'permission') throw new Error(`expected permission, got ${perm.type}`)
+    expect(perm.request_id).toBe('mnopq')
+    expect(perm.behavior).toBe('deny')
   })
 })

@@ -42,7 +42,8 @@ describe('controlled e2e — long content chunking', () => {
 
     const dm = h.client.allChannels.get('dm-u-1')!
     const botMsgs = dm.history.filter(m => m.author.bot)
-    expect(botMsgs.length).toBeGreaterThanOrEqual(3)
+    // 5000 chars / 2000 limit = exactly 3 chunks. >=3 would mask over-split bugs.
+    expect(botMsgs.length).toBe(3)
     for (const m of botMsgs) expect(m.content.length).toBeLessThanOrEqual(2000)
     // Concatenated chunks should reconstruct the body
     expect(botMsgs.map(m => m.content).join('')).toBe(body)
@@ -63,7 +64,9 @@ describe('controlled e2e — long content chunking', () => {
 
     const dm = h.client.allChannels.get('dm-u-1')!
     const botMsgs = dm.history.filter(m => m.author.bot)
-    expect(botMsgs.length).toBeGreaterThanOrEqual(3)
+    // 1500 / 500 = exactly 3.
+    expect(botMsgs.length).toBe(3)
     for (const m of botMsgs) expect(m.content.length).toBeLessThanOrEqual(500)
+    expect(botMsgs.map(m => m.content).join('')).toBe(body)
   })
 })

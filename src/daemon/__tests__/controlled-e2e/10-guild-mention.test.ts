@@ -36,15 +36,31 @@ describe('controlled e2e — guild channel + mention', () => {
   })
 
   it('guild channel without mention is dropped', async () => {
+    // Inject the gated message first, then a sentinel that *should* deliver.
+    // Once the sentinel arrives we know the prior gate check has run, so
+    // asserting "plain message" never reached the plugin is sound.
     h.client.injectMessage({
       userId: 'u-2',
       channelId: 'cg1',
       isDM: false,
       content: 'plain message',
     })
-    // No inbound after a beat
-    await new Promise(r => setTimeout(r, 30))
-    expect(plugin.receivedOfType('inbound')).toHaveLength(0)
+    h.client.injectMessage({
+      userId: 'u-2',
+      channelId: 'cg1',
+      isDM: false,
+      content: '<@BOT_USER> sentinel',
+    })
+
+    const sentinel = await plugin.waitFor(
+      m => m.type === 'inbound' && m.content.includes('sentinel'),
+    )
+    expect(sentinel.type).toBe('inbound')
+
+    const plainInbounds = plugin
+      .receivedOfType('inbound')
+      .filter(m => m.content === 'plain message')
+    expect(plainInbounds).toHaveLength(0)
   })
 
   it('guild channel with structured @mention delivers', async () => {
@@ -55,7 +71,8 @@ describe('controlled e2e — guild channel + mention', () => {
       content: '<@BOT_USER> hello',
     })
     const inbound = await plugin.waitFor(m => m.type === 'inbound')
-    if (inbound.type === 'inbound') expect(inbound.content).toBe('<@BOT_USER> hello')
+    if (inbound.type !== 'inbound') throw new Error(`expected inbound, got ${inbound.type}`)
+    expect(inbound.content).toBe('<@BOT_USER> hello')
   })
 
   it('guild channel with mentionPatterns regex match delivers', async () => {
@@ -66,11 +83,12 @@ describe('controlled e2e — guild channel + mention', () => {
       content: 'hey claude what time is it?',
     })
     const inbound = await plugin.waitFor(m => m.type === 'inbound')
-    if (inbound.type === 'inbound') expect(inbound.content).toMatch(/hey claude/)
+    if (inbound.type !== 'inbound') throw new Error(`expected inbound, got ${inbound.type}`)
+    expect(inbound.content).toMatch(/hey claude/)
   })
 
   it('guild channel without opt-in is dropped even with mention', async () => {
-    // Register a NEW channel that's not in groups
+    // cg2 has no group entry → outbound gate fails. cg1 is opt-in → sentinel.
     h.client.ensureGuildChannel('g1', 'cg2')
     h.client.injectMessage({
       userId: 'u-2',
@@ -78,12 +96,19 @@ describe('controlled e2e — guild channel + mention', () => {
       isDM: false,
       content: '<@BOT_USER> hello',
     })
-    await new Promise(r => setTimeout(r, 30))
-    // Plugin already received messages from earlier tests in this file's describe — we need to count NEW
-    // Easier: use a fresh channel instance check
-    const cg2 = h.client.allChannels.get('cg2')
-    expect(cg2?.type).toBe(ChannelType.GuildText)
-    // The inbound count for cg2 specifically should be 0
+    h.client.injectMessage({
+      userId: 'u-2',
+      channelId: 'cg1',
+      isDM: false,
+      content: '<@BOT_USER> sentinel',
+    })
+
+    const sentinel = await plugin.waitFor(
+      m => m.type === 'inbound' && m.content.includes('sentinel'),
+    )
+    expect(sentinel.type).toBe('inbound')
+
+    expect(h.client.allChannels.get('cg2')?.type).toBe(ChannelType.GuildText)
     const inboundsForCg2 = plugin
       .receivedOfType('inbound')
       .filter(m => m.chat_id === 'cg2')

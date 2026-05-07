@@ -70,11 +70,11 @@ describe('controlled e2e — reply round-trip', () => {
     })
 
     const inbound = await plugin.waitFor(m => m.type === 'inbound')
-    expect(inbound.type).toBe('inbound')
-    if (inbound.type === 'inbound') {
-      expect(inbound.content).toBe('hello bot')
-      expect(inbound.user_id).toBe('u-1')
-      expect(inbound.chat_id).toBe(dmChannelId)
-    }
+    if (inbound.type !== 'inbound') throw new Error(`expected inbound, got ${inbound.type}`)
+    expect(inbound.content).toBe('hello bot')
+    expect(inbound.user_id).toBe('u-1')
+    expect(inbound.chat_id).toBe(dmChannelId)
+    // message_id should be a non-empty mock-generated id
+    expect(inbound.message_id).toMatch(/^m-\d+$/)
   })
 })
