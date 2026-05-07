@@ -184,6 +184,20 @@ function handleRegister(
   conn: Connection,
   registry: WorkspaceRegistry,
 ): void {
+  // Reject double-register from the same connection — otherwise a malicious
+  // or buggy plugin could rename itself and leave an orphaned name pointing
+  // at this conn in the registry. (BH-2 in docs/reviews/code-review-mvp.md.)
+  if (conn.state === 'registered') {
+    log.warn(`register rejected: connection already registered as ${conn.workspace}`)
+    conn.send({
+      type: 'register_reject',
+      v: PROTOCOL_VERSION,
+      reason: 'invalid',
+      detail: 'connection already registered',
+    })
+    return
+  }
+
   if (msg.agent !== 'claude-code') {
     conn.send({
       type: 'register_reject',

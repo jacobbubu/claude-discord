@@ -251,9 +251,9 @@ NFR-1（性能） 与 §13 Roadmap 的里程碑里相同的数字会以"执行�
 | ID | Story | 验收标准 | 优先级 |
 | --- | --- | --- | --- |
 | FR-5.1 | 短消息（≤ 2000 字符）直接 inline | 按 `chunkMode` 切片（length / newline），`replyToMode` 控制 thread 行为 | P0 |
-| FR-5.2 | 长单体内容（如 diff、log）作为 `.md` 附件 | 触发条件：内容超过某阈值（如 4000 字符）或显式标记；优先 `.md` over `.txt` | P0 |
-| FR-5.3 | 思考过程 / tool trace 走线程回复 | 主消息是结论；推理过程作为 thread 挂在主消息下；移动端点开即看 | P1 |
-| FR-5.4 | 结构化总结走 embed | 含 title / description / fields；总字符 ≤ 6000 | P1 |
+| FR-5.2 | 长单体内容（如 diff、log）作为 `.md` 附件 | 触发条件：内容超过某阈值（如 4000 字符）或显式标记；优先 `.md` over `.txt` | P2 (day-2) |
+| FR-5.3 | 思考过程 / tool trace 走线程回复 | 主消息是结论；推理过程作为 thread 挂在主消息下；移动端点开即看 | P2 (day-2) |
+| FR-5.4 | 结构化总结走 embed | 含 title / description / fields；总字符 ≤ 6000 | P2 (day-2) |
 | FR-5.5 | 流式进度 edit 同一消息 | edit 不触发推送；任务完成时 send 一条新消息让设备震一下 | P0 |
 
 ### Epic 6: Discord Permission Q&A Relay

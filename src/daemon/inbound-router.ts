@@ -98,9 +98,17 @@ async function handle(deps: InboundRouterDeps, msg: Message): Promise<void> {
   let workspace = route?.workspace ?? null
 
   if (!workspace) {
-    // Slice 3 fallback: pick most-recently-registered active workspace
+    // Slice 3 fallback: pick most-recently-registered active workspace.
+    // EC-3 (docs/reviews/code-review-mvp.md): emit a warn so unbound DMs
+    // don't silently route to whichever workspace happened to register
+    // last — observable in daemon logs for ops debugging.
     const live = deps.registry.list()
     workspace = live.length > 0 ? live[live.length - 1]!.workspace : null
+    if (workspace) {
+      log.warn(
+        `inbound fallback: channel ${msg.channelId} has no /use binding — routing to most-recent workspace '${workspace}'. Run \`/use <workspace>\` to bind explicitly.`,
+      )
+    }
   }
 
   if (!workspace) {

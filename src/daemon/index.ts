@@ -144,6 +144,8 @@ export async function runDaemon(): Promise<void> {
     shuttingDown = true
     log.info(`received ${signal}, shutting down`)
     approvalWatcher.stop()
+    permissionRelay?.stop()
+    routing.stopWatching()
     void sockServer
       .close()
       .catch(e => log.error(`socket server close failed: ${e}`))

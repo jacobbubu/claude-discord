@@ -37,18 +37,49 @@ type Pending = {
   input_preview: string
   /** Track the messages we've sent so "See more" can edit them. */
   messageRefs: { userId: string; messageId: string }[]
+  /** Unix ms after which this entry is considered stale and dispatch denied. */
+  expiresAt: number
 }
+
+const PENDING_TTL_MS = 60 * 60 * 1000 // 1h
+const PRUNE_INTERVAL_MS = 5 * 60 * 1000 // 5min
 
 export const PERMISSION_TEXT_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 
 export class PermissionRelay {
   private pending = new Map<string, Pending>()
+  private pruneTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(
     private readonly gateway: DiscordGateway,
     private readonly registry: WorkspaceRegistry,
     private readonly paths: Paths,
-  ) {}
+  ) {
+    // EC-1 (docs/reviews/code-review-mvp.md): periodically expire stale
+    // pending entries so memory doesn't grow unbounded when users never
+    // respond. Each expired entry is denied so CC isn't left hanging.
+    this.pruneTimer = setInterval(() => this.prune(), PRUNE_INTERVAL_MS)
+    this.pruneTimer.unref()
+  }
+
+  /** Stop the prune timer (used on daemon shutdown). */
+  stop(): void {
+    if (this.pruneTimer) {
+      clearInterval(this.pruneTimer)
+      this.pruneTimer = null
+    }
+  }
+
+  private prune(): void {
+    const now = Date.now()
+    for (const [requestId, entry] of this.pending) {
+      if (entry.expiresAt < now) {
+        this.pending.delete(requestId)
+        log.warn(`permission ${requestId} expired (no response in ${PENDING_TTL_MS / 60_000}min) — auto-denying`)
+        this.dispatchToPlugin(entry.workspace, requestId, 'deny')
+      }
+    }
+  }
 
   /**
    * A plugin's `permission_request` arrived. Store it, send button DMs.
@@ -69,6 +100,7 @@ export class PermissionRelay {
       description: msg.description,
       input_preview: msg.input_preview,
       messageRefs: [],
+      expiresAt: Date.now() + PENDING_TTL_MS,
     }
     this.pending.set(msg.request_id, entry)
 
