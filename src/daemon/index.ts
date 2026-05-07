@@ -16,6 +16,7 @@ import { resolvePaths } from '../shared/paths.ts'
 import { startApprovalWatcher } from './approval-watcher.ts'
 import { startDiscordGateway } from './discord-gateway.ts'
 import { makeInboundHandler } from './inbound-router.ts'
+import { PermissionRelay } from './permission-relay.ts'
 import { WorkspaceRegistry } from './registry.ts'
 import { RingBufferMap } from './ring-buffer.ts'
 import { RoutingTable } from './routing.ts'
@@ -23,7 +24,11 @@ import {
   attachInteractionHandler,
   registerSlashCommands,
 } from './slash-commands.ts'
-import { startSocketServer, type ToolCallHandler } from './socket-server.ts'
+import {
+  startSocketServer,
+  type PermissionRequestHandler,
+  type ToolCallHandler,
+} from './socket-server.ts'
 import { dispatchToolCall, type ToolContext } from './tool-handlers.ts'
 
 export async function runDaemon(): Promise<void> {
@@ -42,6 +47,9 @@ export async function runDaemon(): Promise<void> {
   const registry = new WorkspaceRegistry()
   const routing = new RoutingTable(paths.routingFile)
   const ringBuffers = new RingBufferMap()
+  // LRU eviction → drop the workspace's ring buffer too so memory doesn't
+  // leak across an evict-then-reregister cycle.
+  registry.onEviction(name => ringBuffers.delete(name))
 
   const gateway = await startDiscordGateway(paths)
 
@@ -53,7 +61,19 @@ export async function runDaemon(): Promise<void> {
       }
     : async () => ({ ok: false, error: 'discord gateway not running' })
 
-  const sockServer = startSocketServer(paths, registry, toolDispatcher)
+  // Permission relay only makes sense when Discord is connected — otherwise
+  // there's no UI for the user to approve/deny.
+  const permissionRelay = gateway
+    ? new PermissionRelay(gateway, registry, paths)
+    : null
+
+  const permissionHandler: PermissionRequestHandler = permissionRelay
+    ? async (workspace, msg) => permissionRelay.handlePluginRequest(workspace, msg)
+    : async () => {
+        log.warn('permission_request received but discord gateway not running — denying')
+      }
+
+  const sockServer = startSocketServer(paths, registry, toolDispatcher, permissionHandler)
 
   if (gateway) {
     const inbound = makeInboundHandler({
@@ -62,6 +82,9 @@ export async function runDaemon(): Promise<void> {
       registry,
       routing,
       ringBuffers,
+      permissionTextIntercept: permissionRelay
+        ? (senderId, text) => permissionRelay.handleTextResponse(senderId, text)
+        : undefined,
     })
     gateway.client.on('messageCreate', msg => {
       if (msg.author.bot) return
@@ -77,6 +100,9 @@ export async function runDaemon(): Promise<void> {
       routing,
       ringBuffers,
       paths,
+      buttonIntercept: permissionRelay
+        ? async i => permissionRelay.handleButton(i)
+        : undefined,
     })
     gateway.client.on('interactionCreate', interactionHandler)
 

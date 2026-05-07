@@ -9,6 +9,7 @@
  * outstanding tool calls fail fast with clear errors.
  */
 
+import { z } from 'zod'
 import { resolvePaths } from '../shared/paths.ts'
 import { PROTOCOL_VERSION } from '../protocol/version.ts'
 import type { WireMsg } from '../protocol/schema.ts'
@@ -22,6 +23,16 @@ import {
 } from './mcp-server.ts'
 import { SocketClient } from './socket-client.ts'
 import { ToolBridge } from './tool-handlers.ts'
+
+const PermissionRequestNotificationSchema = z.object({
+  method: z.literal('notifications/claude/channel/permission_request'),
+  params: z.object({
+    request_id: z.string(),
+    tool_name: z.string(),
+    description: z.string(),
+    input_preview: z.string(),
+  }),
+})
 
 const HEARTBEAT_MS = 10_000
 
@@ -46,6 +57,25 @@ const dispatch: ToolDispatcher = (tool, args) => {
 }
 
 const mcp = buildMcpServer(dispatch)
+
+// Subscribe to CC's permission_request — forward to daemon for Discord-side
+// approval. The matching `permission` reply lands in onMessage and is
+// emitted back as an MCP notification to CC.
+mcp.setNotificationHandler(PermissionRequestNotificationSchema, async ({ params }) => {
+  if (!state.client) {
+    process.stderr.write('plugin: permission_request received but daemon disconnected\n')
+    return
+  }
+  state.client.send({
+    type: 'permission_request',
+    v: PROTOCOL_VERSION,
+    request_id: params.request_id,
+    tool_name: params.tool_name,
+    description: params.description,
+    input_preview: params.input_preview,
+  })
+})
+
 await connectMcpStdio(mcp)
 
 function startHeartbeat(): void {
@@ -84,6 +114,12 @@ function onMessage(msg: WireMsg): void {
       return
     case 'tool_result':
       state.bridge?.receiveResult(msg)
+      return
+    case 'permission':
+      void mcp.notification({
+        method: 'notifications/claude/channel/permission',
+        params: { request_id: msg.request_id, behavior: msg.behavior },
+      })
       return
     case 'evicted':
       process.stderr.write(`plugin: evicted by daemon (${msg.reason ?? 'no reason'})\n`)

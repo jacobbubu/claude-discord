@@ -21,9 +21,14 @@ import {
   cmdStatus as cmdAccessStatus,
 } from './access-mutate.ts'
 import { configure } from './configure.ts'
+import { dev } from './dev.ts'
 import { install } from './install.ts'
+import { logs } from './logs.ts'
+import { reset } from './reset.ts'
+import { restart } from './restart.ts'
 import { start } from './start.ts'
 import { status } from './status.ts'
+import { stop } from './stop.ts'
 import { uninstall } from './uninstall.ts'
 
 const program = new Command()
@@ -132,11 +137,32 @@ program
     await status()
   })
 
-// Remaining slice-6 stubs.
-program.command('dev').description('foreground daemon with file watch (Slice 6)').action(notYet('dev', 'Slice 6'))
-program.command('reset').description('clear state then start (Slice 6)').action(notYet('reset', 'Slice 6'))
-program.command('stop').description('stop service (Slice 6)').action(notYet('stop', 'Slice 6'))
-program.command('restart').description('stop + start (Slice 6)').action(notYet('restart', 'Slice 6'))
-program.command('logs').description('tail daemon logs (Slice 6)').action(notYet('logs', 'Slice 6'))
+program.command('dev').description('foreground daemon with file watch').action(() => dev())
+
+program
+  .command('reset')
+  .description('clear local state files (scoped by flags)')
+  .option('--routing', 'clear routing.json')
+  .option('--inbox', 'clear inbox/*')
+  .option('--pending', 'clear pending pairings in access.json')
+  .option('--all', 'clear routing + inbox + pending')
+  .option('--including-token', 'also delete .env (token)')
+  .option('--including-acl', 'also reset access.json to defaults (allowFrom + groups + mentionPatterns wiped)')
+  .action((opts: { routing?: boolean; inbox?: boolean; pending?: boolean; all?: boolean; includingToken?: boolean; includingAcl?: boolean }) =>
+    reset(opts),
+  )
+
+program.command('stop').description('stop the installed service (without uninstalling)').action(() => stop())
+
+program.command('restart').description('stop + start the installed service').action(() => restart())
+
+program
+  .command('logs')
+  .description('tail daemon logs')
+  .option('-f, --follow', 'follow logs (tail -F)')
+  .action((opts: { follow?: boolean }) => logs({ follow: opts.follow }))
+
+// notYet remains imported but unused — silence lint
+void notYet
 
 program.parseAsync(process.argv)

@@ -97,6 +97,35 @@ export const ByeSchema = z.object({
 export type ByeMsg = z.infer<typeof ByeSchema>
 
 /**
+ * Permission relay (upstream's `claude/channel/permission` protocol).
+ *
+ * - permission_request: plugin → daemon when CC asks for permission to use
+ *   a tool. Daemon then prompts the user (Discord buttons + text).
+ * - permission: daemon → plugin once the user decides. Plugin emits the
+ *   matching MCP notification back to CC.
+ *
+ * `request_id` is a 5-letter [a-km-z] code (skips 'l'), matching upstream's
+ * mobile-autocorrect-friendly format.
+ */
+export const PermissionRequestSchema = z.object({
+  type: z.literal('permission_request'),
+  v: versionField,
+  request_id: z.string().regex(/^[a-km-z]{5}$/),
+  tool_name: z.string(),
+  description: z.string(),
+  input_preview: z.string(),
+})
+export type PermissionRequestMsg = z.infer<typeof PermissionRequestSchema>
+
+export const PermissionSchema = z.object({
+  type: z.literal('permission'),
+  v: versionField,
+  request_id: z.string().regex(/^[a-km-z]{5}$/),
+  behavior: z.enum(['allow', 'deny']),
+})
+export type PermissionMsg = z.infer<typeof PermissionSchema>
+
+/**
  * Discriminated union of every message type. Use this for parsing arbitrary
  * NDJSON lines into typed messages.
  */
@@ -110,5 +139,7 @@ export const WireSchema = z.discriminatedUnion('type', [
   ToolResultSchema,
   EvictedSchema,
   ByeSchema,
+  PermissionRequestSchema,
+  PermissionSchema,
 ])
 export type WireMsg = z.infer<typeof WireSchema>

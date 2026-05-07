@@ -22,6 +22,11 @@ export type ToolCallHandler = (
   args: Record<string, unknown>,
 ) => Promise<{ ok: boolean; result?: string; error?: string }>
 
+export type PermissionRequestHandler = (
+  workspace: string,
+  msg: import('../protocol/schema.ts').PermissionRequestMsg,
+) => Promise<void> | void
+
 export type SocketServer = {
   close(): Promise<void>
 }
@@ -33,10 +38,15 @@ const echoHandler: ToolCallHandler = async (_w, tool, args) => ({
   result: `(echo) ${tool}(${JSON.stringify(args)})`,
 })
 
+const noopPermission: PermissionRequestHandler = () => {
+  /* slice 2 default — no permission relay wired */
+}
+
 export function startSocketServer(
   paths: Paths,
   registry: WorkspaceRegistry,
   handleToolCall: ToolCallHandler = echoHandler,
+  handlePermissionRequest: PermissionRequestHandler = noopPermission,
 ): SocketServer {
   if (existsSync(paths.socketPath)) {
     try {
@@ -46,7 +56,9 @@ export function startSocketServer(
     }
   }
 
-  const server: Server = createServer(socket => onSocket(socket, registry, handleToolCall))
+  const server: Server = createServer(socket =>
+    onSocket(socket, registry, handleToolCall, handlePermissionRequest),
+  )
 
   server.on('error', err => log.error(`socket server error: ${err}`))
 
@@ -95,6 +107,7 @@ function onSocket(
   socket: Socket,
   registry: WorkspaceRegistry,
   handleToolCall: ToolCallHandler,
+  handlePermissionRequest: PermissionRequestHandler,
 ): void {
   const conn = new Connection(socket)
   const buf = new LineBuffer()
@@ -104,7 +117,7 @@ function onSocket(
 
   socket.on('data', chunk => {
     for (const line of buf.push(chunk as unknown as string)) {
-      handleLine(line, conn, registry, handleToolCall)
+      handleLine(line, conn, registry, handleToolCall, handlePermissionRequest)
     }
   })
 
@@ -122,6 +135,7 @@ function handleLine(
   conn: Connection,
   registry: WorkspaceRegistry,
   handleToolCall: ToolCallHandler,
+  handlePermissionRequest: PermissionRequestHandler,
 ): void {
   conn.touch()
 
@@ -150,6 +164,15 @@ function handleLine(
       return
     case 'tool_call':
       void handleToolCallMsg(msg, conn, handleToolCall)
+      return
+    case 'permission_request':
+      if (!conn.workspace) {
+        log.warn(`permission_request before register dropped`)
+        return
+      }
+      void Promise.resolve(handlePermissionRequest(conn.workspace, msg)).catch(e =>
+        log.warn(`permission_request handler error: ${e}`),
+      )
       return
     default:
       log.warn(`plugin socket: unexpected message type from plugin: ${msg.type}`)

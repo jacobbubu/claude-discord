@@ -36,6 +36,8 @@ export type SlashDeps = {
   routing: RoutingTable
   ringBuffers: RingBufferMap
   paths: Paths
+  /** Optional button click intercept (used for permission Q&A buttons). */
+  buttonIntercept?: (i: import('discord.js').ButtonInteraction) => Promise<boolean>
 }
 
 export function buildCommandList() {
@@ -109,6 +111,10 @@ export function attachInteractionHandler(deps: SlashDeps): (i: Interaction) => v
 
 async function handle(deps: SlashDeps, i: Interaction): Promise<void> {
   if (i.isAutocomplete()) return handleAutocomplete(deps, i)
+  if (i.isButton()) {
+    if (deps.buttonIntercept && (await deps.buttonIntercept(i))) return
+    return
+  }
   if (!i.isChatInputCommand()) return
   if (!isAuthorized(deps, i.user.id)) {
     await i.reply({ content: 'Not authorized.', ephemeral: true }).catch(() => {})

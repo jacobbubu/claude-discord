@@ -31,6 +31,14 @@ export type InboundRouterDeps = {
   registry: WorkspaceRegistry
   routing: RoutingTable
   ringBuffers: RingBufferMap
+  /**
+   * Optional intercept for permission Q&A text replies (`yes XXXXX` / `no XXXXX`).
+   * Returns true if the text was consumed as a permission response — the
+   * router then drops the message without going through the access gate.
+   * Caller (permission-relay) is responsible for verifying sender is in
+   * allowFrom before claiming the message.
+   */
+  permissionTextIntercept?: (senderId: string, text: string) => boolean
 }
 
 export function makeInboundHandler(deps: InboundRouterDeps): (msg: Message) => void {
@@ -43,6 +51,16 @@ async function handle(deps: InboundRouterDeps, msg: Message): Promise<void> {
   // Hot read access.json on every message (matches upstream behavior).
   const access = readAccessFile(deps.accessFile)
   if (pruneExpired(access)) writeAccessFile(deps.accessFile, access)
+
+  // Permission Q&A text intercept — runs BEFORE gate so already-allowed users
+  // can answer with `yes XXXXX` / `no XXXXX` without their reply being routed
+  // to a workspace as chat. The intercept itself checks allowFrom.
+  if (deps.permissionTextIntercept?.(msg.author.id, msg.content)) {
+    void msg
+      .react(msg.content.toLowerCase().includes('yes') ? '✅' : '❌')
+      .catch(() => {})
+    return
+  }
 
   const isDM = msg.channel.type === ChannelType.DM
   const guildChannelKey = msg.channel.isThread()
