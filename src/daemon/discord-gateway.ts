@@ -81,7 +81,8 @@ export async function startDiscordGateway(paths: Paths): Promise<DiscordGateway 
   const dmChannelUsers = new Map<string, string>()
 
   client.on('error', err => log.warn(`discord client error: ${err}`))
-  client.once('ready', c => log.info(`discord gateway connected as ${c.user.tag}`))
+  // discord.js 14 deprecated 'ready' in favor of 'clientReady' (effective in v15).
+  client.once('clientReady', c => log.info(`discord gateway connected as ${c.user.tag}`))
 
   await client.login(token)
 

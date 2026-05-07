@@ -107,7 +107,8 @@ export async function runDaemon(): Promise<void> {
     gateway.client.on('interactionCreate', interactionHandler)
 
     // Register slash commands once the bot is ready (needs guild list).
-    gateway.client.once('ready', async () => {
+    // 'clientReady' is the v15-forward name for what was 'ready' in v14.
+    gateway.client.once('clientReady', async () => {
       const token = process.env.DISCORD_BOT_TOKEN
       if (token) {
         await registerSlashCommands(gateway.client, token).catch(e =>
