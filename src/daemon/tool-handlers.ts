@@ -43,14 +43,50 @@ export type ToolOutcome =
 
 const fail = (error: string): ToolOutcome => ({ ok: false, error })
 
+/**
+ * Fetch a Discord channel + assert the daemon is allowed to send to it.
+ *
+ * Symmetry with the inbound gate (architecture §17.2 — patched after the
+ * upstream deep-dive at docs/research/upstream-architecture-deep-dive.md
+ * §3.1). Even though the inbound gate would have dropped a Discord message
+ * from a non-allowlisted user, an outbound tool call could in principle
+ * target *any* channel ID Claude Code knows about. This check ensures
+ * Claude can only send to channels we'd accept inbound from:
+ *   - DM channels: recipient must be in access.allowFrom
+ *   - Guild channels: channel id (or parent if thread) must be in access.groups
+ *
+ * Returns null on either "not text-based" or "not in access list", with a
+ * stderr warn naming the reason. Caller's generic error message is fine
+ * because callers already wrap null in a tool fail() — the daemon log has
+ * the real reason for ops to see.
+ */
 async function fetchTextChannel(ctx: ToolContext, channelId: string): Promise<Channel | null> {
+  let ch: Channel | null
   try {
-    const ch = await ctx.gateway.client.channels.fetch(channelId)
-    if (!ch || !ch.isTextBased()) return null
-    return ch
+    ch = await ctx.gateway.client.channels.fetch(channelId)
   } catch {
     return null
   }
+  if (!ch || !ch.isTextBased()) return null
+
+  const access = readAccessFile(ctx.paths.accessFile)
+  if (ch.type === ChannelType.DM) {
+    const recipient =
+      (ch as unknown as { recipientId?: string }).recipientId ??
+      ctx.gateway.getDmRecipient(channelId)
+    if (!recipient || !access.allowFrom.includes(recipient)) {
+      log.warn(`outbound deny: DM channel ${channelId} → recipient ${recipient ?? '<unknown>'} not in allowFrom`)
+      return null
+    }
+  } else {
+    const key = ch.isThread() ? (ch.parentId ?? ch.id) : ch.id
+    if (!(key in access.groups)) {
+      log.warn(`outbound deny: guild channel ${key} not opted-in via /discord:access group add`)
+      return null
+    }
+  }
+
+  return ch
 }
 
 function chunk(text: string, limit: number, mode: 'length' | 'newline'): string[] {

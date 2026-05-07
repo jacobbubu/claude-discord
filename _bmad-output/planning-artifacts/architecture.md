@@ -88,6 +88,27 @@ claude-discord 的架构由三种进程构成：**Daemon**（singleton 长驻进
 
 **plugin 是 thin proxy**——除了 MCP↔socket 的双向桥接，不在自己进程里实现路由、限流、ring buffer 之类的"daemon 业务"。这条原则保证 plugin 升级与 daemon 升级解耦。
 
+### 3.1 ADR — 为什么不沿用上游 1:1 模型
+
+**Context**：上游 `claude-plugins-official/discord` 是 1 个 MCP server 进程对应 1 个 CC session（spawn from `claude --channels plugin:discord`），整个文件 ~900 行做完了 Discord 客户端 / 访问控制 / 配对 / 消息桥 / MCP 工具五件事。
+
+**Decision**：我们引入 daemon + plugin 两进程拆分（CLI 第三类无状态进程不计），plugin 作为 thin proxy。
+
+**Rationale**：
+
+- 多 workspace 场景下（N 个 CC project），1:1 模型意味着 N 个 token / N 个 Discord application / N 套独立访问控制。运维成本随项目数线性上升，5+ 项目就开始痛
+- daemon 作为本机单例长驻进程，可以多路复用 1 个 Discord bot 跨 N workspace，配合 channel-as-slot + `/use` 切换 UX
+- daemon 集中持有 active registry / ring buffer / 限流队列，这些不能做成 per-CC-session（重启 CC 不应丢上下文）
+- agent-extensibility（codex 等）需要协议层抽象，plugin↔daemon 之间的 NDJSON 协议是这个抽象的承载
+
+**Consequences**：
+
+- 引入新基础设施：NDJSON 协议、Unix socket、plugin reconnect、LRU、launchd/systemd installer
+- 上游的"密度的胜利"（一个文件可读完所有逻辑）不再，需要靠模块化 + 类型 + 注释保持可读性
+- plugin 升级需独立于 daemon 兼容（见 §19）
+
+参见 `docs/research/upstream-architecture-deep-dive.md` §4.1。
+
 ## 4. Process & Lifecycle Model
 
 ### 4.1 Daemon
@@ -1124,6 +1145,27 @@ plugin v2 ↔ daemon v1 : daemon 不识别 v=2 → reject; plugin reconnect 失�
 
 - `npm install -g claude-discord-bot@latest` → 重启 daemon（launchd KeepAlive 自然会拉起）
 - plugin 通常随 CC plugin 包升级；如果 daemon 比 plugin 新，向后兼容保证短时间不中断
+
+### 19.4 ADR — 为什么协议层带版本 + capability 协商
+
+**Context**：上游 plugin↔CC 走 MCP（已是协议），plugin 与"daemon"不存在（无 daemon），所以上游不需要自定义协议版本。我们引入了 plugin↔daemon 的自定义 NDJSON 协议。
+
+**Decision**：每条 wire 消息携带 `v: 1` 协议版本字段；register 握手携带 `agent`、`capabilities`、`protocol_version`；daemon 在 `register_reject` 中可指定 `expected_version` 与 `reason`。
+
+**Rationale**：
+
+- plugin 与 daemon 的发版节奏未来会脱钩——plugin 跟随 CC plugin 系统升级，daemon 跟随系统服务包升级。版本错配是常态而非异常
+- agent-extensibility 需要 capability 协商（同一个 daemon 既要服务 claude-code 也要服务 codex），单纯版本号不够，要 capability set
+- 协议演化时（比如 v2 改了 inbound 字段命名），daemon 应能识别旧 v1 plugin 并 graceful degrade 或拒接，而不是直接打挂
+- 显式协议字段是"你以为以后不会需要但实际很贵"的反例——加在 v1 就 1 字段成本，等到 v2 才加要做 schema migration
+
+**Consequences**：
+
+- 每条 NDJSON 多 4 字节（`"v":1,`）开销——可忽略
+- `WireSchema` 用 zod discriminated union 在两端各做一次校验，runtime cost 微小
+- 测试增加一类 case：跨版本拒接（`register_reject reason=protocol_mismatch`）
+
+参见 `docs/research/upstream-architecture-deep-dive.md` §4.2。
 
 ## 20. Spike Issues / 验证任务
 
