@@ -1,9 +1,9 @@
 /**
  * Daemon-side Unix domain socket server. Accepts plugin connections,
- * handles register handshake + heartbeat + tool_call (echo for slice 2).
+ * handles register handshake + heartbeat + tool_call (delegated).
  *
- * Slice 4 will replace the tool_call echo with the real Discord-side
- * implementation. Slice 5/6 will add LRU eviction and ring buffer.
+ * Tool-call dispatch is injected: pass a `handleToolCall` callback. Slice 4
+ * wires it to the real discord.js implementation via dispatchToolCall.
  */
 
 import { chmodSync, existsSync, unlinkSync } from 'node:fs'
@@ -16,14 +16,28 @@ import type { Paths } from '../shared/paths.ts'
 import { Connection } from './connection.ts'
 import type { WorkspaceRegistry } from './registry.ts'
 
+export type ToolCallHandler = (
+  workspace: string,
+  tool: string,
+  args: Record<string, unknown>,
+) => Promise<{ ok: boolean; result?: string; error?: string }>
+
 export type SocketServer = {
   close(): Promise<void>
 }
 
 const HEARTBEAT_TIMEOUT_MS = 30_000
 
-export function startSocketServer(paths: Paths, registry: WorkspaceRegistry): SocketServer {
-  // Ensure no stale socket file from a previous crashed daemon.
+const echoHandler: ToolCallHandler = async (_w, tool, args) => ({
+  ok: true,
+  result: `(echo) ${tool}(${JSON.stringify(args)})`,
+})
+
+export function startSocketServer(
+  paths: Paths,
+  registry: WorkspaceRegistry,
+  handleToolCall: ToolCallHandler = echoHandler,
+): SocketServer {
   if (existsSync(paths.socketPath)) {
     try {
       unlinkSync(paths.socketPath)
@@ -32,7 +46,7 @@ export function startSocketServer(paths: Paths, registry: WorkspaceRegistry): So
     }
   }
 
-  const server: Server = createServer(socket => onSocket(socket, registry))
+  const server: Server = createServer(socket => onSocket(socket, registry, handleToolCall))
 
   server.on('error', err => log.error(`socket server error: ${err}`))
 
@@ -45,7 +59,6 @@ export function startSocketServer(paths: Paths, registry: WorkspaceRegistry): So
     log.info(`socket server listening on ${paths.socketPath}`)
   })
 
-  // Reaper: drop connections that haven't sent any traffic recently.
   const reaper = setInterval(() => {
     const now = Date.now()
     for (const conn of registry.list()) {
@@ -78,7 +91,11 @@ export function startSocketServer(paths: Paths, registry: WorkspaceRegistry): So
   }
 }
 
-function onSocket(socket: Socket, registry: WorkspaceRegistry): void {
+function onSocket(
+  socket: Socket,
+  registry: WorkspaceRegistry,
+  handleToolCall: ToolCallHandler,
+): void {
   const conn = new Connection(socket)
   const buf = new LineBuffer()
 
@@ -87,7 +104,7 @@ function onSocket(socket: Socket, registry: WorkspaceRegistry): void {
 
   socket.on('data', chunk => {
     for (const line of buf.push(chunk as unknown as string)) {
-      handleLine(line, conn, registry)
+      handleLine(line, conn, registry, handleToolCall)
     }
   })
 
@@ -100,7 +117,12 @@ function onSocket(socket: Socket, registry: WorkspaceRegistry): void {
   socket.on('error', err => log.warn(`plugin socket error: ${err}`))
 }
 
-function handleLine(line: string, conn: Connection, registry: WorkspaceRegistry): void {
+function handleLine(
+  line: string,
+  conn: Connection,
+  registry: WorkspaceRegistry,
+  handleToolCall: ToolCallHandler,
+): void {
   conn.touch()
 
   let raw: unknown
@@ -125,14 +147,11 @@ function handleLine(line: string, conn: Connection, registry: WorkspaceRegistry)
       handleRegister(msg, conn, registry)
       return
     case 'heartbeat':
-      // Touch already happened above. Nothing else to do.
       return
     case 'tool_call':
-      handleToolCall(msg, conn)
+      void handleToolCallMsg(msg, conn, handleToolCall)
       return
     default:
-      // server-side messages (register_ack, inbound, etc.) shouldn't arrive
-      // from plugin; ignore but log.
       log.warn(`plugin socket: unexpected message type from plugin: ${msg.type}`)
   }
 }
@@ -142,7 +161,6 @@ function handleRegister(
   conn: Connection,
   registry: WorkspaceRegistry,
 ): void {
-  // Slice 2: only accept claude-code; future slices add codex etc.
   if (msg.agent !== 'claude-code') {
     conn.send({
       type: 'register_reject',
@@ -154,7 +172,6 @@ function handleRegister(
     return
   }
 
-  // Workspace name from cwd basename. Slice 5/6 adds collision suffix.
   const basename = msg.cwd.split('/').pop() || 'workspace'
   conn.workspace = basename
   conn.agent = msg.agent
@@ -172,19 +189,27 @@ function handleRegister(
   log.info(`workspace registered: ${basename} (agent=${msg.agent}, pid=${msg.pid})`)
 }
 
-/**
- * Slice 2 echo handler. Slice 4 replaces this with the real Discord
- * tool_call routing.
- */
-function handleToolCall(
+async function handleToolCallMsg(
   msg: { id: string; tool: string; args: Record<string, unknown> },
   conn: Connection,
-): void {
+  handleToolCall: ToolCallHandler,
+): Promise<void> {
+  if (!conn.workspace) {
+    conn.send({
+      type: 'tool_result',
+      v: PROTOCOL_VERSION,
+      id: msg.id,
+      ok: false,
+      error: 'tool_call before register',
+    })
+    return
+  }
+  const out = await handleToolCall(conn.workspace, msg.tool, msg.args)
   conn.send({
     type: 'tool_result',
     v: PROTOCOL_VERSION,
     id: msg.id,
-    ok: true,
-    result: `(slice2-echo) ${msg.tool}(${JSON.stringify(msg.args)})`,
+    ok: out.ok,
+    ...(out.ok ? { result: out.result ?? '' } : { error: out.error ?? 'unknown error' }),
   })
 }

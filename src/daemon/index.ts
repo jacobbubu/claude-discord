@@ -1,12 +1,11 @@
 /**
- * Daemon entry — slice 3.
+ * Daemon entry — slice 4.
  *
  * Pipeline at startup:
- *   initStateDir → start socket-server (plugin side) → start discord-gateway
- *   → wire inbound handler → start approval-watcher → idle until shutdown.
- *
- * Shutdown order (matters):
- *   socket-server bye-broadcast & close → discord-gateway destroy → exit.
+ *   initStateDir → start socket-server (with real tool dispatcher) →
+ *   start discord-gateway → register slash commands on ready →
+ *   wire inbound handler + slash interaction handler →
+ *   start approval-watcher → idle until shutdown.
  */
 
 import { chmodSync, existsSync, mkdirSync } from 'node:fs'
@@ -18,8 +17,14 @@ import { startApprovalWatcher } from './approval-watcher.ts'
 import { startDiscordGateway } from './discord-gateway.ts'
 import { makeInboundHandler } from './inbound-router.ts'
 import { WorkspaceRegistry } from './registry.ts'
+import { RingBufferMap } from './ring-buffer.ts'
 import { RoutingTable } from './routing.ts'
-import { startSocketServer } from './socket-server.ts'
+import {
+  attachInteractionHandler,
+  registerSlashCommands,
+} from './slash-commands.ts'
+import { startSocketServer, type ToolCallHandler } from './socket-server.ts'
+import { dispatchToolCall, type ToolContext } from './tool-handlers.ts'
 
 export async function runDaemon(): Promise<void> {
   const paths = resolvePaths()
@@ -36,23 +41,53 @@ export async function runDaemon(): Promise<void> {
 
   const registry = new WorkspaceRegistry()
   const routing = new RoutingTable(paths.routingFile)
-  const sockServer = startSocketServer(paths, registry)
+  const ringBuffers = new RingBufferMap()
 
   const gateway = await startDiscordGateway(paths)
 
+  // Build the real tool dispatcher (or echo fallback if gateway absent).
+  const toolDispatcher: ToolCallHandler = gateway
+    ? async (workspace, tool, args) => {
+        const ctx: ToolContext = { gateway, ringBuffers, paths, workspace }
+        return await dispatchToolCall(ctx, tool, args)
+      }
+    : async () => ({ ok: false, error: 'discord gateway not running' })
+
+  const sockServer = startSocketServer(paths, registry, toolDispatcher)
+
   if (gateway) {
-    const handler = makeInboundHandler({
+    const inbound = makeInboundHandler({
       accessFile: paths.accessFile,
       gateway,
       registry,
       routing,
+      ringBuffers,
     })
     gateway.client.on('messageCreate', msg => {
       if (msg.author.bot) return
       if (msg.channel.type === ChannelType.DM) {
         gateway.noteDmRecipient(msg.channelId, msg.author.id)
       }
-      handler(msg)
+      inbound(msg)
+    })
+
+    const interactionHandler = attachInteractionHandler({
+      gateway,
+      registry,
+      routing,
+      ringBuffers,
+      paths,
+    })
+    gateway.client.on('interactionCreate', interactionHandler)
+
+    // Register slash commands once the bot is ready (needs guild list).
+    gateway.client.once('ready', async () => {
+      const token = process.env.DISCORD_BOT_TOKEN
+      if (token) {
+        await registerSlashCommands(gateway.client, token).catch(e =>
+          log.warn(`slash registration failed: ${e}`),
+        )
+      }
     })
   } else {
     log.warn(

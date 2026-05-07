@@ -22,6 +22,7 @@ import {
 } from './access-control.ts'
 import type { DiscordGateway } from './discord-gateway.ts'
 import type { WorkspaceRegistry } from './registry.ts'
+import type { RingBufferMap } from './ring-buffer.ts'
 import type { RoutingTable } from './routing.ts'
 
 export type InboundRouterDeps = {
@@ -29,6 +30,7 @@ export type InboundRouterDeps = {
   gateway: DiscordGateway
   registry: WorkspaceRegistry
   routing: RoutingTable
+  ringBuffers: RingBufferMap
 }
 
 export function makeInboundHandler(deps: InboundRouterDeps): (msg: Message) => void {
@@ -115,6 +117,14 @@ async function handle(deps: InboundRouterDeps, msg: Message): Promise<void> {
           })),
         }
       : {}),
+  })
+
+  // Track inbound message in workspace's ring buffer for /recent.
+  deps.ringBuffers.for(workspace).push({
+    channelId: msg.channelId,
+    direction: 'in',
+    text: msg.content || '(attachment)',
+    ts: msg.createdAt.getTime(),
   })
 }
 
