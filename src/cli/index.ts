@@ -21,7 +21,10 @@ import {
   cmdStatus as cmdAccessStatus,
 } from './access-mutate.ts'
 import { configure } from './configure.ts'
+import { install } from './install.ts'
 import { start } from './start.ts'
+import { status } from './status.ts'
+import { uninstall } from './uninstall.ts'
 
 const program = new Command()
 program
@@ -110,13 +113,30 @@ const notYet = (name: string, slice: string) => () => {
 }
 
 program.command('access').description('show access summary').action(() => cmdAccessStatus())
-program.command('dev').description('foreground daemon with file watch (Slice 5)').action(notYet('dev', 'Slice 5'))
-program.command('reset').description('clear state then start (Slice 5)').action(notYet('reset', 'Slice 5'))
-program.command('stop').description('stop service (Slice 5)').action(notYet('stop', 'Slice 5'))
-program.command('restart').description('stop + start (Slice 5)').action(notYet('restart', 'Slice 5'))
-program.command('logs').description('tail daemon logs (Slice 5)').action(notYet('logs', 'Slice 5'))
-program.command('install').description('register service via launchd / systemd (Slice 5)').action(notYet('install', 'Slice 5'))
-program.command('uninstall').description('remove service (Slice 5)').action(notYet('uninstall', 'Slice 5'))
-program.command('status').description('show daemon health (Slice 4)').action(notYet('status', 'Slice 4'))
+
+program
+  .command('install')
+  .description('register daemon as launchd (macOS) / systemd (Linux) user service')
+  .option('--dry-run', 'print install plan without applying')
+  .action((opts: { dryRun?: boolean }) => install({ dryRun: opts.dryRun }))
+
+program
+  .command('uninstall')
+  .description('reverse of install (idempotent)')
+  .action(() => uninstall())
+
+program
+  .command('status')
+  .description('show daemon health and service state')
+  .action(async () => {
+    await status()
+  })
+
+// Remaining slice-6 stubs.
+program.command('dev').description('foreground daemon with file watch (Slice 6)').action(notYet('dev', 'Slice 6'))
+program.command('reset').description('clear state then start (Slice 6)').action(notYet('reset', 'Slice 6'))
+program.command('stop').description('stop service (Slice 6)').action(notYet('stop', 'Slice 6'))
+program.command('restart').description('stop + start (Slice 6)').action(notYet('restart', 'Slice 6'))
+program.command('logs').description('tail daemon logs (Slice 6)').action(notYet('logs', 'Slice 6'))
 
 program.parseAsync(process.argv)

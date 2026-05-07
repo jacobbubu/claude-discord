@@ -67,6 +67,16 @@ export function buildCommandList() {
           .setMinValue(1)
           .setMaxValue(RECENT_MAX),
       ),
+    new SlashCommandBuilder()
+      .setName('status')
+      .setDescription('Show online status of a workspace (default: this channel\'s binding)')
+      .addStringOption(o =>
+        o
+          .setName('workspace')
+          .setDescription('Workspace name (default: current channel binding)')
+          .setRequired(false)
+          .setAutocomplete(true),
+      ),
   ].map(c => c.toJSON())
 }
 
@@ -111,6 +121,8 @@ async function handle(deps: SlashDeps, i: Interaction): Promise<void> {
       return handleLast(deps, i)
     case 'list':
       return handleList(deps, i)
+    case 'status':
+      return handleStatusCmd(deps, i)
     case 'which':
       return handleWhich(deps, i)
     case 'recent':
@@ -123,7 +135,7 @@ function isAuthorized(deps: SlashDeps, userId: string): boolean {
 }
 
 async function handleAutocomplete(deps: SlashDeps, i: AutocompleteInteraction): Promise<void> {
-  if (i.commandName !== 'use') return await i.respond([])
+  if (i.commandName !== 'use' && i.commandName !== 'status') return await i.respond([])
   const focus = i.options.getFocused().toLowerCase()
   const matches = deps.registry
     .list()
@@ -191,6 +203,35 @@ async function handleList(deps: SlashDeps, i: ChatInputCommandInteraction): Prom
     return `• \`${c.workspace}\` (\`${c.agent}\`) — last activity <t:${ts}:R>`
   })
   await i.reply({ content: lines.join('\n'), ephemeral: true })
+}
+
+async function handleStatusCmd(
+  deps: SlashDeps,
+  i: ChatInputCommandInteraction,
+): Promise<void> {
+  const explicit = i.options.getString('workspace')
+  let target: string | null = explicit
+  if (!target) {
+    const route = deps.routing.get(i.channelId)
+    target = route?.workspace ?? null
+  }
+  if (!target) {
+    await i.reply({
+      content: 'no workspace specified and this channel has no binding.',
+      ephemeral: true,
+    })
+    return
+  }
+  const conn = deps.registry.get(target)
+  if (!conn) {
+    await i.reply({ content: `\`${target}\` — offline`, ephemeral: true })
+    return
+  }
+  const ts = Math.floor(conn.lastActivityTs / 1000)
+  await i.reply({
+    content: `\`${target}\` — online (\`${conn.agent}\`), last activity <t:${ts}:R>`,
+    ephemeral: true,
+  })
 }
 
 async function handleWhich(deps: SlashDeps, i: ChatInputCommandInteraction): Promise<void> {
