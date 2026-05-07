@@ -94,7 +94,17 @@ export function buildMcpServer(dispatch: ToolDispatcher): Server {
   const mcp = new Server(
     { name: 'claude-discord', version: '0.0.1' },
     {
-      capabilities: { tools: {}, experimental: { 'claude/channel': {} } },
+      // 'claude/channel/permission' is the opt-in for the permission relay
+      // protocol. Declaring it asserts we authenticate the responder, which
+      // we do via access.allowFrom in permission-relay.ts. Without this
+      // declaration CC may not route permission_request notifications here.
+      capabilities: {
+        tools: {},
+        experimental: {
+          'claude/channel': {},
+          'claude/channel/permission': {},
+        },
+      },
       instructions: [
         'The sender reads Discord, not this session. Anything you want them to see must go through the reply tool — your transcript output never reaches their chat.',
         'Messages from Discord arrive as <channel source="discord" chat_id="..." message_id="..." user="..." ts="...">. Reply with the reply tool — pass chat_id back.',

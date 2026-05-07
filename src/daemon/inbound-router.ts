@@ -117,6 +117,20 @@ async function handle(deps: InboundRouterDeps, msg: Message): Promise<void> {
     return
   }
 
+  // UX: tell the user we're processing. Discord shows "claude is typing…"
+  // for ~10s, usually enough to cover Claude's first-token latency.
+  if ('sendTyping' in msg.channel) {
+    void (msg.channel as { sendTyping: () => Promise<void> })
+      .sendTyping()
+      .catch(() => {})
+  }
+
+  // UX: optional ack reaction (e.g. 👀 / 🔨). Set via
+  // `claude-discord-bot set ackReaction <emoji>`; empty string disables.
+  if (access.ackReaction) {
+    void msg.react(access.ackReaction).catch(() => {})
+  }
+
   conn.send({
     type: 'inbound',
     v: PROTOCOL_VERSION,
