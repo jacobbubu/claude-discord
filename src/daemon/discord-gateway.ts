@@ -58,24 +58,40 @@ function loadEnvFile(envPath: string): void {
   }
 }
 
-export async function startDiscordGateway(paths: Paths): Promise<DiscordGateway | null> {
-  loadEnvFile(paths.envFile)
+/**
+ * Optional client factory — used by tests to inject a mock discord.js Client.
+ * Production callers omit this and get the real Client.
+ *
+ * The factory is also responsible for a non-default token: when the factory
+ * is provided, we don't load .env or read DISCORD_BOT_TOKEN (the mock
+ * doesn't authenticate against real Discord).
+ */
+export type ClientFactory = () => Client
 
-  const token = process.env.DISCORD_BOT_TOKEN
-  if (!token) {
-    log.error(`DISCORD_BOT_TOKEN missing — set in ${paths.envFile} or shell env`)
-    return null
+export async function startDiscordGateway(
+  paths: Paths,
+  factory?: ClientFactory,
+): Promise<DiscordGateway | null> {
+  let client: Client
+  if (factory) {
+    client = factory()
+  } else {
+    loadEnvFile(paths.envFile)
+    const token = process.env.DISCORD_BOT_TOKEN
+    if (!token) {
+      log.error(`DISCORD_BOT_TOKEN missing — set in ${paths.envFile} or shell env`)
+      return null
+    }
+    client = new Client({
+      intents: [
+        GatewayIntentBits.DirectMessages,
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+      ],
+      partials: [Partials.Channel],
+    })
   }
-
-  const client = new Client({
-    intents: [
-      GatewayIntentBits.DirectMessages,
-      GatewayIntentBits.Guilds,
-      GatewayIntentBits.GuildMessages,
-      GatewayIntentBits.MessageContent,
-    ],
-    partials: [Partials.Channel],
-  })
 
   const recentSent = new Set<string>()
   const dmChannelUsers = new Map<string, string>()
@@ -84,7 +100,10 @@ export async function startDiscordGateway(paths: Paths): Promise<DiscordGateway 
   // discord.js 14 deprecated 'ready' in favor of 'clientReady' (effective in v15).
   client.once('clientReady', c => log.info(`discord gateway connected as ${c.user.tag}`))
 
-  await client.login(token)
+  if (!factory) {
+    // Real Discord — actually log in. Mock factory pre-emits clientReady on its own.
+    await client.login(process.env.DISCORD_BOT_TOKEN)
+  }
 
   const noteSent = (id: string): void => {
     recentSent.add(id)
