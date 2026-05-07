@@ -118,9 +118,15 @@ export async function startDiscordGateway(paths: Paths): Promise<DiscordGateway 
     },
     async shutdown() {
       try {
+        // Race destroy() against a 2s timeout, but unref the timer so it
+        // doesn't keep the process alive after destroy() resolves.
+        // (BH-4 in docs/reviews/code-review-mvp.md.)
         await Promise.race([
           client.destroy(),
-          new Promise<void>(r => setTimeout(r, 2_000)),
+          new Promise<void>(r => {
+            const t = setTimeout(r, 2_000)
+            t.unref()
+          }),
         ])
       } catch (e) {
         log.warn(`gateway shutdown: ${e}`)

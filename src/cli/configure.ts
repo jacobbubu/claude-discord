@@ -35,8 +35,13 @@ export function configure(token: string): void {
     } catch {}
     for (const line of readFileSync(paths.envFile, 'utf8').split('\n')) {
       if (line.startsWith('DISCORD_BOT_TOKEN=')) {
-        lines.push(`DISCORD_BOT_TOKEN=${trimmed}`)
-        updated = true
+        if (!updated) {
+          // First TOKEN line is replaced; subsequent ones (if user hand-edited
+          // a malformed .env with duplicates) are intentionally dropped to
+          // dedupe. (BH-5 in docs/reviews/code-review-mvp.md.)
+          lines.push(`DISCORD_BOT_TOKEN=${trimmed}`)
+          updated = true
+        }
       } else if (line.length > 0) {
         lines.push(line)
       }

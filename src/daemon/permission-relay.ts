@@ -122,15 +122,16 @@ export class PermissionRelay {
     }
 
     const [, behavior, requestId] = m
-    const entry = this.pending.get(requestId!)
-    if (!entry) {
-      await interaction
-        .reply({ content: 'This permission request is no longer pending.', ephemeral: true })
-        .catch(() => {})
-      return true
-    }
 
     if (behavior === 'more') {
+      // 'more' is a non-claiming peek — don't delete pending here.
+      const entry = this.pending.get(requestId!)
+      if (!entry) {
+        await interaction
+          .reply({ content: 'This permission request is no longer pending.', ephemeral: true })
+          .catch(() => {})
+        return true
+      }
       let prettyInput: string
       try {
         prettyInput = JSON.stringify(JSON.parse(entry.input_preview), null, 2)
@@ -158,13 +159,34 @@ export class PermissionRelay {
       return true
     }
 
-    // allow / deny
-    this.finalize(requestId!, behavior as 'allow' | 'deny', entry)
+    // allow / deny — atomic claim so concurrent text response can't double-dispatch.
+    // (BH-1 in docs/reviews/code-review-mvp.md.)
+    const claimed = this.claimPending(requestId!)
+    if (!claimed) {
+      await interaction
+        .reply({
+          content: 'This permission request was already answered (or expired).',
+          ephemeral: true,
+        })
+        .catch(() => {})
+      return true
+    }
+    this.dispatchToPlugin(claimed.workspace, requestId!, behavior as 'allow' | 'deny')
     const label = behavior === 'allow' ? '✅ Allowed' : '❌ Denied'
     await interaction
       .update({ content: `${interaction.message.content}\n\n${label}`, components: [] })
       .catch(() => {})
     return true
+  }
+
+  /**
+   * Atomic get + delete. First caller wins; concurrent callers see null.
+   */
+  private claimPending(requestId: string): Pending | null {
+    const entry = this.pending.get(requestId)
+    if (!entry) return null
+    this.pending.delete(requestId)
+    return entry
   }
 
   /**
@@ -182,16 +204,12 @@ export class PermissionRelay {
     const requestId = m[2]!.toLowerCase()
     const behavior = m[1]!.toLowerCase().startsWith('y') ? 'allow' : 'deny'
 
-    const entry = this.pending.get(requestId)
-    if (!entry) return false // pending may have expired or been answered already
+    // Atomic claim — concurrent button click won't see this entry. (BH-1)
+    const claimed = this.claimPending(requestId)
+    if (!claimed) return false // already answered (or expired)
 
-    this.finalize(requestId, behavior, entry)
+    this.dispatchToPlugin(claimed.workspace, requestId, behavior)
     return true
-  }
-
-  private finalize(requestId: string, behavior: 'allow' | 'deny', entry: Pending): void {
-    this.pending.delete(requestId)
-    this.dispatchToPlugin(entry.workspace, requestId, behavior)
   }
 
   private dispatchToPlugin(

@@ -185,6 +185,16 @@ async function connectLoop(): Promise<void> {
 
 await connectLoop()
 
+// Global safety net — without these the plugin process dies silently on
+// any unhandled rejection or sync throw, taking the CC session's MCP
+// channel with it. (BH-3 in docs/reviews/code-review-mvp.md.)
+process.on('unhandledRejection', err =>
+  process.stderr.write(`plugin: unhandled rejection: ${err}\n`),
+)
+process.on('uncaughtException', err =>
+  process.stderr.write(`plugin: uncaught exception: ${err}\n`),
+)
+
 process.on('SIGTERM', () => process.exit(0))
 process.on('SIGINT', () => process.exit(0))
 
