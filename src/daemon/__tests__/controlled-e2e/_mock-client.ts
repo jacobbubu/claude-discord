@@ -17,8 +17,9 @@
 import { EventEmitter } from 'node:events'
 import { ChannelType } from 'discord.js'
 
-let nextMessageId = 1_000
-const seq = () => `m-${nextMessageId++}`
+// Per-instance message id counter — accessed via `client.nextMessageId++`.
+// Module-level state would leak across tests in the same file.
+const seq = (client: MockClient) => `m-${client.nextMessageId++}`
 
 export type MockMessage = {
   id: string
@@ -82,7 +83,7 @@ const makeMessage = (
   reference?: { messageId?: string },
 ): MockMessage => {
   const msg: MockMessage = {
-    id: seq(),
+    id: seq(client),
     channelId: channel.id,
     channel,
     author,
@@ -120,7 +121,7 @@ const makeMessage = (
       return found
     },
     async startThread(opts: { name: string }) {
-      const thread = makeChannel(`thread-${seq()}`, ChannelType.PublicThread, client, { parentId: channel.id })
+      const thread = makeChannel(`thread-${seq(client)}`, ChannelType.PublicThread, client, { parentId: channel.id })
       thread.threads = undefined  // threads of threads not supported
       return thread
     },
@@ -183,7 +184,7 @@ const makeChannel = (
     threads: type === ChannelType.GuildText
       ? {
           async create(opts: { name: string; startMessage?: string }) {
-            const t = makeChannel(`thread-${seq()}`, ChannelType.PublicThread, client, { parentId: ch.id })
+            const t = makeChannel(`thread-${seq(client)}`, ChannelType.PublicThread, client, { parentId: ch.id })
             return t
           },
         }
@@ -219,6 +220,8 @@ export class MockClient extends EventEmitter {
   /** Test-side introspection: every channel ever created. */
   readonly allChannels = new Map<string, MockChannel>()
   readonly allUsers = new Map<string, MockUser>()
+  /** Auto-incrementing message id seed — fresh per MockClient instance. */
+  nextMessageId = 1_000
 
   /**
    * Construct a DM channel between the bot and a given user. Returns the

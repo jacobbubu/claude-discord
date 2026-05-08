@@ -44,7 +44,7 @@ export type Harness = {
  * Build a fresh harness in a tempdir. Caller awaits client login (clientReady)
  * before injecting messages.
  */
-export async function buildHarness(): Promise<Harness> {
+export async function buildHarness(opts: { registry?: { cap?: number; trim?: number } } = {}): Promise<Harness> {
   const stateDir = mkdtempSync(join(tmpdir(), 'ce2e-'))
   mkdirSync(join(stateDir, 'inbox'), { recursive: true })
   mkdirSync(join(stateDir, 'approved'), { recursive: true })
@@ -56,7 +56,7 @@ export async function buildHarness(): Promise<Harness> {
 
   const gateway = (await startDiscordGateway(paths, () => client as unknown as DiscordClient))!
 
-  const registry = new WorkspaceRegistry()
+  const registry = new WorkspaceRegistry(opts.registry)
   const routing = new RoutingTable(paths.routingFile)
   const ringBuffers = new RingBufferMap()
   registry.onEviction(name => ringBuffers.delete(name))
