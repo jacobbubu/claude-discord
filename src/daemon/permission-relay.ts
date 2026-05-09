@@ -104,7 +104,14 @@ export class PermissionRelay {
     }
     this.pending.set(msg.request_id, entry)
 
-    const text = `🔐 Permission: ${msg.tool_name}\n\nrequest_id: \`${msg.request_id}\` — reply with \`yes ${msg.request_id}\` or \`no ${msg.request_id}\` if buttons aren't available.`
+    // Main prompt is intentionally minimal — tool name + a one-line summary.
+    // The request_id and `yes/no XXXXX` text fallback are folded into the
+    // "See more" expansion (handleButton 'more' branch) so they only surface
+    // when the user explicitly wants the technical detail or buttons fail.
+    const summary = msg.description.split('\n', 1)[0]?.trim() || ''
+    const text = summary
+      ? `🔐 Permission: ${msg.tool_name}\n${summary}`
+      : `🔐 Permission: ${msg.tool_name}`
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setCustomId(`perm:more:${msg.request_id}`)
@@ -174,7 +181,8 @@ export class PermissionRelay {
         `🔐 Permission: ${entry.tool_name}\n\n` +
         `tool_name: ${entry.tool_name}\n` +
         `description: ${entry.description}\n` +
-        `input_preview:\n\`\`\`json\n${prettyInput}\n\`\`\``
+        `input_preview:\n\`\`\`json\n${prettyInput}\n\`\`\`\n\n` +
+        `_If buttons aren't available, reply with \`yes ${requestId}\` or \`no ${requestId}\`._`
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder()
           .setCustomId(`perm:allow:${requestId}`)

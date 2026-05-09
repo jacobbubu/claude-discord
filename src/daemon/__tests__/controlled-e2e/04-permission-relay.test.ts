@@ -53,10 +53,10 @@ describe('controlled e2e — permission relay (text)', () => {
     const dmBotMsgs = dm!.history.filter(m => m.author.bot)
     const promptMsg = dmBotMsgs.find(m => m.content.includes('Permission'))
     expect(promptMsg).toBeDefined()
-    // The DM prompt should surface the tool name and request_id so the user
-    // can decide and reply by id.
+    // Main prompt surfaces the tool name only — request_id is folded into
+    // the "See more" expansion (polish #29).
     expect(promptMsg!.content).toContain('Bash')
-    expect(promptMsg!.content).toContain('abcde')
+    expect(promptMsg!.content).not.toContain('abcde')
 
     // User replies with "yes abcde"
     h.client.injectMessage({ userId: 'u-1', content: 'yes abcde', isDM: true })
