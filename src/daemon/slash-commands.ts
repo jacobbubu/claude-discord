@@ -14,11 +14,19 @@ import {
   type ChatInputCommandInteraction,
   type Client,
   type Interaction,
+  InteractionContextType,
   REST,
   Routes,
   SlashCommandBuilder,
   TextChannel,
 } from 'discord.js'
+
+// Make commands usable in guild text channels, bot DMs, and group/private DMs.
+const ALL_CONTEXTS = [
+  InteractionContextType.Guild,
+  InteractionContextType.BotDM,
+  InteractionContextType.PrivateChannel,
+] as const
 import { readAccessFile } from './access-control.ts'
 import type { DiscordGateway } from './discord-gateway.ts'
 import type { WorkspaceRegistry } from './registry.ts'
@@ -45,6 +53,7 @@ export function buildCommandList() {
     new SlashCommandBuilder()
       .setName('use')
       .setDescription('Switch this channel to a workspace')
+      .setContexts(...ALL_CONTEXTS)
       .addStringOption(o =>
         o
           .setName('workspace')
@@ -52,16 +61,22 @@ export function buildCommandList() {
           .setRequired(true)
           .setAutocomplete(true),
       ),
-    new SlashCommandBuilder().setName('last').setDescription('Switch back to previous workspace'),
+    new SlashCommandBuilder()
+      .setName('last')
+      .setDescription('Switch back to previous workspace')
+      .setContexts(...ALL_CONTEXTS),
     new SlashCommandBuilder()
       .setName('list')
-      .setDescription('List active workspaces (most recent first)'),
+      .setDescription('List active workspaces (most recent first)')
+      .setContexts(...ALL_CONTEXTS),
     new SlashCommandBuilder()
       .setName('which')
-      .setDescription("Show this channel's current workspace binding"),
+      .setDescription("Show this channel's current workspace binding")
+      .setContexts(...ALL_CONTEXTS),
     new SlashCommandBuilder()
       .setName('recent')
       .setDescription('Show last N messages of current workspace')
+      .setContexts(...ALL_CONTEXTS)
       .addIntegerOption(o =>
         o
           .setName('n')
@@ -72,6 +87,7 @@ export function buildCommandList() {
     new SlashCommandBuilder()
       .setName('status')
       .setDescription('Show online status of a workspace (default: this channel\'s binding)')
+      .setContexts(...ALL_CONTEXTS)
       .addStringOption(o =>
         o
           .setName('workspace')
@@ -91,8 +107,18 @@ export async function registerSlashCommands(client: Client, token: string): Prom
   const rest = new REST({ version: '10' }).setToken(token)
   const commands = buildCommandList()
 
-  // Register per-guild for instant propagation. Iterate over all guilds the
-  // bot is in (post-ready). Slice 5 may add a global registration mode.
+  // Global registration — required for commands to appear in bot DMs (the
+  // contexts list includes BotDM/PrivateChannel). Discord propagates global
+  // commands lazily (~1 hour to all clients), so we ALSO register per-guild
+  // below for instant availability in guild text channels.
+  try {
+    await rest.put(Routes.applicationCommands(appId), { body: commands })
+    log.info(`slash: registered ${commands.length} commands globally (DM-eligible; ~1h propagation)`)
+  } catch (e) {
+    log.warn(`slash: global register failed: ${e}`)
+  }
+
+  // Per-guild registration for instant propagation in guild contexts.
   for (const guildId of client.guilds.cache.keys()) {
     try {
       await rest.put(Routes.applicationGuildCommands(appId, guildId), { body: commands })
