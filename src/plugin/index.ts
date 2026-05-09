@@ -198,4 +198,11 @@ process.on('uncaughtException', err =>
 process.on('SIGTERM', () => process.exit(0))
 process.on('SIGINT', () => process.exit(0))
 
+// Belt-and-suspenders: if MCP transport's onclose hook (mcp-server.ts) fails
+// to fire on stdin EOF for some reason, the raw stream events still trigger
+// process exit. Without this, observed PID 43849 spin in #26 — orphan plugin
+// after parent CC TUI exit.
+process.stdin.on('end', () => process.exit(0))
+process.stdin.on('close', () => process.exit(0))
+
 process.stderr.write(`plugin: started (path=${SOCKET_PATH})\n`)

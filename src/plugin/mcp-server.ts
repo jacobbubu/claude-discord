@@ -132,7 +132,13 @@ export function buildMcpServer(dispatch: ToolDispatcher): Server {
 }
 
 export async function connectMcpStdio(mcp: Server): Promise<void> {
-  await mcp.connect(new StdioServerTransport())
+  const transport = new StdioServerTransport()
+  // When parent CC dies its stdio pipes close — without an onclose handler
+  // the plugin process keeps running orphaned (occasionally entering a high
+  // CPU loop while reconnecting to a since-vanished daemon, see #26). Tie
+  // process exit to transport close so plugin lifecycle follows parent.
+  transport.onclose = () => process.exit(0)
+  await mcp.connect(transport)
 }
 
 /**
