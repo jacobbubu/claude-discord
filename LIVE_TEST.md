@@ -89,20 +89,32 @@ Leave the daemon running.
 
 ## 5. Configure & start a Claude Code session
 
-In a **new terminal**:
+Two modes — pick one based on whether you want CC to **auto-respond** to
+Discord inbound, or you'll trigger replies manually.
+
+### 5a. Manual mode（半自动 demo）
+
+CC 不监听 channel notification，需要你在 cc 终端 prompt CC 才会调 reply：
 
 ```bash
-cd /path/to/some-project           # any project dir; the workspace name = basename
-claude                              # CC starts; reads ./.mcp.json if present
-```
-
-If your project has a `.mcp.json` pointing at our plugin (see
-`claude-discord/.mcp.json` for a template), CC will spawn the plugin
-automatically. Otherwise pass the plugin via flags:
-
-```bash
+cd /path/to/some-project
 claude --mcp-config /path/to/claude-discord/.mcp.json
 ```
+
+适合验证 outbound 链路（CC → daemon → Discord）。
+
+### 5b. Channel mode（自动响应 inbound）— 推荐
+
+需要先按 README "Channel mode" 一节做完三段配置：marketplace 注册 +
+managed-settings allowlist + permissions.allow。完成后：
+
+```bash
+cd /path/to/some-project
+claude --channels plugin:claude-discord@jacobbubu
+```
+
+CC 启动后输出 `Listening for channel messages from: plugin:claude-discord@jacobbubu`
+即进入 channel mode；之后 Discord DM 进来会自动驱动 CC 响应。
 
 In the daemon's terminal you should now see:
 

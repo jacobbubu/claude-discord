@@ -85,6 +85,74 @@ bun run src/cli/index.ts pair <6-hex-code>
 # 6. Now from Discord, /use <workspace> to bind a channel and send messages.
 ```
 
+## Channel mode（让 Discord 入站自动驱动 CC）
+
+默认 `claude` 启动方式 CC 不会响应 plugin 推送的 inbound notification —
+你得在 cc 终端手动 prompt CC 调 `reply` 工具。要让 Discord DM 自动驱动 CC
+回复（"channel mode"），需要三段配置：
+
+**1. 把本仓库注册为 marketplace 并安装为 plugin**
+
+```bash
+# 在 claude 内
+/plugin marketplace add https://github.com/jacobbubu/claude-discord.git
+/plugin install claude-discord@jacobbubu
+```
+
+**2. 把 plugin 加进 macOS managed-settings 的 channel allowlist**
+
+```bash
+sudo tee "/Library/Application Support/ClaudeCode/managed-settings.json" <<'EOF'
+{
+  "channelsEnabled": true,
+  "allowedChannelPlugins": [
+    { "marketplace": "jacobbubu", "plugin": "claude-discord" }
+  ]
+}
+EOF
+```
+
+> 注：channel allowlist 只读 macOS managed-settings（root 写入），user-level
+> `~/.claude/settings.json` 的 `allowedChannelPlugins` 字段不被 channel 路径
+> 读取。这是 anthropic CLI 设计，不是我们的限制。
+
+**3. 用 channel mode 启动 CC**
+
+```bash
+claude --channels plugin:claude-discord@jacobbubu
+```
+
+启动后看到：
+
+```
+Listening for channel messages from: plugin:claude-discord@jacobbubu
+```
+
+无 `not on the approved channels allowlist` 报错即配置成功。Discord DM 进来
+会自动驱动 CC 响应、调 reply tool 回 Discord。
+
+**可选：免每次工具弹窗**
+
+CC TUI 默认对每次 MCP 工具调用都弹 "Do you want to proceed?" 确认。在 channel
+mode 下（无人值守）这会卡住自动响应。把这些工具加入 `~/.claude/settings.json`
+的 `permissions.allow` 即可静默：
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__plugin_claude-discord_claude-discord__reply",
+      "mcp__plugin_claude-discord_claude-discord__react",
+      "mcp__plugin_claude-discord_claude-discord__edit_message",
+      "mcp__plugin_claude-discord_claude-discord__fetch_messages",
+      "mcp__plugin_claude-discord_claude-discord__download_attachment"
+    ]
+  }
+}
+```
+
+也可以在弹窗里选 "Yes, and don't ask again for ..." 实现 per-cwd 同效果。
+
 ## CLI reference
 
 | Command | Description |
