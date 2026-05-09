@@ -100,6 +100,18 @@ export async function startDiscordGateway(
   // discord.js 14 deprecated 'ready' in favor of 'clientReady' (effective in v15).
   client.once('clientReady', c => log.info(`discord gateway connected as ${c.user.tag}`))
 
+  // NFR-2 / NFR-4: surface 429 rate-limit events. discord.js REST handles
+  // retry/queue internally; this listener is observation only — no action.
+  // Mock clients in tests don't have a `rest` manager — skip when absent.
+  if (client.rest) {
+    client.rest.on('rateLimited', info => {
+      log.warn(
+        `discord rate limit hit: route=${info.route} method=${info.method} ` +
+        `timeToReset=${info.timeToReset}ms global=${info.global ?? false}`,
+      )
+    })
+  }
+
   if (!factory) {
     // Real Discord — actually log in. Mock factory pre-emits clientReady on its own.
     await client.login(process.env.DISCORD_BOT_TOKEN)
