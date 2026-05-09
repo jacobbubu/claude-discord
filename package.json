@@ -1,6 +1,6 @@
 {
   "name": "claude-discord-bot",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "A Claude Code Discord plugin — machine-level agent gateway daemon for Discord × Claude Code",
   "type": "module",
   "license": "MIT",
