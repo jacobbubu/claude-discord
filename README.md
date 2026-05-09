@@ -257,6 +257,45 @@ Source declaration: `src/cli/access-mutate.ts` top comment. Rationale:
 - Permission Q&A responses (button + text) verify the responder is in
   `allowFrom`.
 
+## BMAD-METHOD
+
+This project's spec was driven through [BMAD-METHOD](https://github.com/bmad-code-org/BMAD-METHOD)
+(v6.6.0, `bmm` module + `claude-code` tool). New collaborators can find every
+upstream decision document in two places:
+
+```
+_bmad-output/
+├── planning-artifacts/       ← committed: spec, plans, audits
+│   ├── product-brief.md
+│   ├── prd.md                ← 73 FRs + 7 NFRs (the single source of truth)
+│   ├── architecture.md       ← module-by-module mapping
+│   ├── epics.md              ← Epic A MVP breakdown
+│   └── prd-validation-report.md
+├── verification-matrix.md    ← SC + NFR audit (PRD §4 / §12 contract)
+├── fr-audit.md               ← auto-generated FR audit (heuristic)
+├── fr-audit-reviewed.md      ← human-reviewed FR audit (canonical)
+└── brainstorming/            ← analyst-stage discovery sessions
+
+docs/                         ← long-term reference, not BMAD planning
+├── research/                 ← upstream architecture deep-dives, capability inventory
+└── reviews/                  ← code-review reports
+
+CHANGELOG.md                  ← release history (Keep a Changelog format)
+LIVE_TEST.md                  ← real-Discord walk-through
+```
+
+**Commit policy**:
+- `_bmad-output/planning-artifacts/` — committed (review + traceability)
+- `_bmad-output/brainstorming/` — committed (decision provenance)
+- `_bmad-output/implementation-artifacts/` — not committed (per-session scratch)
+- `docs/` — committed (long-term project knowledge)
+
+To use BMAD skills in a fresh Claude Code session, just type `/bmad-help`
+(or any `/bmm:*` skill) — they're registered under `.claude/skills/`.
+
+For audit / verification status, read `_bmad-output/verification-matrix.md`
+first — it tells you which SC / NFR / FR are ✅ vs ❌ pending.
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).
