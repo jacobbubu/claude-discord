@@ -210,20 +210,45 @@ function handleRegister(
   }
 
   const basename = msg.cwd.split('/').pop() || 'workspace'
-  conn.workspace = basename
+  // Auto-suffix on collision (architecture.md §4.2: "cwd basename，撞名 +序号").
+  // Two CC sessions opened in the same cwd would otherwise both claim the
+  // same workspace name and trigger registry.register's boot-the-old behavior,
+  // sending the booted plugin into a reconnect/re-register loop with the new
+  // one — observed thrash in real Discord testing.
+  let name = basename
+  let suffix = 2
+  while (registry.get(name) && registry.get(name) !== conn) {
+    name = `${basename}-${suffix++}`
+    if (suffix > 1000) {
+      conn.send({
+        type: 'register_reject',
+        v: PROTOCOL_VERSION,
+        reason: 'capacity',
+        detail: `too many collisions for basename ${basename}`,
+      })
+      conn.close()
+      return
+    }
+  }
+
+  conn.workspace = name
   conn.agent = msg.agent
   conn.capabilities = msg.capabilities
   conn.state = 'registered'
-  registry.register(basename, conn)
+  registry.register(name, conn)
 
   conn.send({
     type: 'register_ack',
     v: PROTOCOL_VERSION,
-    workspace: basename,
+    workspace: name,
     server_capabilities: ['reply', 'react', 'edit_message', 'fetch_messages', 'download_attachment'],
   })
 
-  log.info(`workspace registered: ${basename} (agent=${msg.agent}, pid=${msg.pid})`)
+  if (name !== basename) {
+    log.info(`workspace registered: ${name} (agent=${msg.agent}, pid=${msg.pid}, basename=${basename} taken — auto-suffixed)`)
+  } else {
+    log.info(`workspace registered: ${name} (agent=${msg.agent}, pid=${msg.pid})`)
+  }
 }
 
 async function handleToolCallMsg(

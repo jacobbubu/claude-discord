@@ -61,4 +61,27 @@ describe('controlled e2e — plugin reconnect', () => {
 
     await b.close()
   })
+
+  it('two plugins with same cwd → second registers with -2 suffix', async () => {
+    const a = new MockPlugin({ socketPath: h.paths.socketPath, cwd: '/tmp/foo' })
+    const b = new MockPlugin({ socketPath: h.paths.socketPath, cwd: '/tmp/foo' })
+    await a.connect()
+    await b.connect()
+
+    const ackA = await a.register()
+    const ackB = await b.register()
+    expect(ackA.ok).toBe(true)
+    expect(ackB.ok).toBe(true)
+    if (ackA.ok && ackB.ok) {
+      expect(ackA.workspace).toBe('foo')
+      expect(ackB.workspace).toBe('foo-2')
+    }
+
+    expect(h.registry.list().length).toBe(2)
+    const names = h.registry.list().map(c => c.workspace).sort()
+    expect(names).toEqual(['foo', 'foo-2'])
+
+    await a.close()
+    await b.close()
+  })
 })
