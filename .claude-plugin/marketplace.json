@@ -1,0 +1,31 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "jacobbubu",
+  "description": "Personal marketplace — claude-discord (multi-workspace Discord gateway plugin)",
+  "owner": {
+    "name": "Rong Shen",
+    "email": "rong.shen@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "claude-discord",
+      "description": "Discord channel for Claude Code — multi-workspace gateway daemon variant. Single bot routes to N CC workspaces with channel-as-slot binding (`/use <workspace>`).",
+      "version": "0.0.1",
+      "author": {
+        "name": "Rong Shen",
+        "email": "rong.shen@gmail.com"
+      },
+      "source": "./",
+      "category": "messaging",
+      "homepage": "https://github.com/jacobbubu/claude-discord",
+      "tags": [
+        "discord",
+        "messaging",
+        "channel",
+        "mcp",
+        "multi-workspace"
+      ]
+    }
+  ],
+  "version": "0.0.1"
+}
