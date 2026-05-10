@@ -126,6 +126,25 @@ export const PermissionSchema = z.object({
 export type PermissionMsg = z.infer<typeof PermissionSchema>
 
 /**
+ * Architecture deltas §15: CC built-in tool permission request, sent by
+ * `claude-discord-permission-hook` subprocess that CC spawns via the
+ * `hooks.PermissionRequest` config in settings.json.
+ *
+ * Identical shape to PermissionRequestSchema except for `type` discriminator
+ * and the conn lifecycle on the daemon side: hook conns are anonymous (no
+ * register), one-shot (close after permission response).
+ */
+export const CcPermissionRequestSchema = z.object({
+  type: z.literal('cc_permission_request'),
+  v: versionField,
+  request_id: z.string().regex(/^[a-km-z]{5}$/),
+  tool_name: z.string(),
+  description: z.string(),
+  input_preview: z.string(),
+})
+export type CcPermissionRequestMsg = z.infer<typeof CcPermissionRequestSchema>
+
+/**
  * Discriminated union of every message type. Use this for parsing arbitrary
  * NDJSON lines into typed messages.
  */
@@ -141,5 +160,6 @@ export const WireSchema = z.discriminatedUnion('type', [
   ByeSchema,
   PermissionRequestSchema,
   PermissionSchema,
+  CcPermissionRequestSchema,
 ])
 export type WireMsg = z.infer<typeof WireSchema>

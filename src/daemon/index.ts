@@ -26,6 +26,7 @@ import {
 } from './slash-commands.ts'
 import {
   startSocketServer,
+  type CcPermissionRequestHandler,
   type PermissionRequestHandler,
   type ToolCallHandler,
 } from './socket-server.ts'
@@ -73,7 +74,21 @@ export async function runDaemon(): Promise<void> {
         log.warn('permission_request received but discord gateway not running — denying')
       }
 
-  const sockServer = startSocketServer(paths, registry, toolDispatcher, permissionHandler)
+  // Architecture deltas §15: anonymous hook-conn permission requests for
+  // CC built-in tools (Read / Bash / Edit / ...). Same DM flow.
+  const ccPermissionHandler: CcPermissionRequestHandler = permissionRelay
+    ? async (conn, msg) => permissionRelay.handleCcRequest(conn, msg)
+    : async () => {
+        log.warn('cc_permission_request received but discord gateway not running — denying')
+      }
+
+  const sockServer = startSocketServer(
+    paths,
+    registry,
+    toolDispatcher,
+    permissionHandler,
+    ccPermissionHandler,
+  )
 
   if (gateway) {
     const inbound = makeInboundHandler({

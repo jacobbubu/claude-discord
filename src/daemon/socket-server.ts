@@ -27,6 +27,16 @@ export type PermissionRequestHandler = (
   msg: import('../protocol/schema.ts').PermissionRequestMsg,
 ) => Promise<void> | void
 
+/**
+ * Architecture deltas §15: anonymous one-shot conn from the
+ * `claude-discord-permission-hook` subprocess. Daemon writes the
+ * `permission` reply back on the same conn.
+ */
+export type CcPermissionRequestHandler = (
+  conn: Connection,
+  msg: import('../protocol/schema.ts').CcPermissionRequestMsg,
+) => Promise<void> | void
+
 export type SocketServer = {
   close(): Promise<void>
 }
@@ -42,11 +52,16 @@ const noopPermission: PermissionRequestHandler = () => {
   /* slice 2 default — no permission relay wired */
 }
 
+const noopCcPermission: CcPermissionRequestHandler = () => {
+  /* deltas §15 default — no hook handler wired */
+}
+
 export function startSocketServer(
   paths: Paths,
   registry: WorkspaceRegistry,
   handleToolCall: ToolCallHandler = echoHandler,
   handlePermissionRequest: PermissionRequestHandler = noopPermission,
+  handleCcPermissionRequest: CcPermissionRequestHandler = noopCcPermission,
 ): SocketServer {
   if (existsSync(paths.socketPath)) {
     try {
@@ -57,7 +72,7 @@ export function startSocketServer(
   }
 
   const server: Server = createServer(socket =>
-    onSocket(socket, registry, handleToolCall, handlePermissionRequest),
+    onSocket(socket, registry, handleToolCall, handlePermissionRequest, handleCcPermissionRequest),
   )
 
   server.on('error', err => log.error(`socket server error: ${err}`))
@@ -108,6 +123,7 @@ function onSocket(
   registry: WorkspaceRegistry,
   handleToolCall: ToolCallHandler,
   handlePermissionRequest: PermissionRequestHandler,
+  handleCcPermissionRequest: CcPermissionRequestHandler,
 ): void {
   const conn = new Connection(socket)
   const buf = new LineBuffer()
@@ -117,7 +133,14 @@ function onSocket(
 
   socket.on('data', chunk => {
     for (const line of buf.push(chunk as unknown as string)) {
-      handleLine(line, conn, registry, handleToolCall, handlePermissionRequest)
+      handleLine(
+        line,
+        conn,
+        registry,
+        handleToolCall,
+        handlePermissionRequest,
+        handleCcPermissionRequest,
+      )
     }
   })
 
@@ -136,6 +159,7 @@ function handleLine(
   registry: WorkspaceRegistry,
   handleToolCall: ToolCallHandler,
   handlePermissionRequest: PermissionRequestHandler,
+  handleCcPermissionRequest: CcPermissionRequestHandler,
 ): void {
   conn.touch()
 
@@ -172,6 +196,14 @@ function handleLine(
       }
       void Promise.resolve(handlePermissionRequest(conn.workspace, msg)).catch(e =>
         log.warn(`permission_request handler error: ${e}`),
+      )
+      return
+    case 'cc_permission_request':
+      // Anonymous one-shot conn from `claude-discord-permission-hook`
+      // (architecture deltas §15). No register required — daemon writes
+      // the permission reply back on the same conn.
+      void Promise.resolve(handleCcPermissionRequest(conn, msg)).catch(e =>
+        log.warn(`cc_permission_request handler error: ${e}`),
       )
       return
     default:

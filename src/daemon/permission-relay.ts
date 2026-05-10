@@ -23,15 +23,33 @@ import {
   type ButtonInteraction,
 } from 'discord.js'
 import { readAccessFile } from './access-control.ts'
+import type { Connection } from './connection.ts'
 import type { DiscordGateway } from './discord-gateway.ts'
 import type { WorkspaceRegistry } from './registry.ts'
 import { PROTOCOL_VERSION } from '../protocol/version.ts'
-import type { PermissionMsg, PermissionRequestMsg } from '../protocol/schema.ts'
+import type {
+  CcPermissionRequestMsg,
+  PermissionMsg,
+  PermissionRequestMsg,
+} from '../protocol/schema.ts'
 import { log } from '../shared/logger.ts'
 import type { Paths } from '../shared/paths.ts'
 
+/**
+ * Pending permission request can target either:
+ *   - a registered plugin (workspace name) — the spec's existing path
+ *   - an anonymous one-shot hook conn — architecture deltas §15
+ *
+ * The button + text-response paths are unified; only dispatch back differs.
+ */
+type PendingTarget =
+  | { kind: 'plugin'; workspace: string }
+  | { kind: 'hook'; conn: Connection }
+
 type Pending = {
-  workspace: string
+  target: PendingTarget
+  /** "plugin" or "cc-builtin" — drives DM prompt prefix and log lines. */
+  source: 'plugin' | 'cc-builtin'
   tool_name: string
   description: string
   input_preview: string
@@ -76,7 +94,7 @@ export class PermissionRelay {
       if (entry.expiresAt < now) {
         this.pending.delete(requestId)
         log.warn(`permission ${requestId} expired (no response in ${PENDING_TTL_MS / 60_000}min) — auto-denying`)
-        this.dispatchToPlugin(entry.workspace, requestId, 'deny')
+        this.dispatchToTarget(entry.target, requestId, 'deny')
       }
     }
   }
@@ -85,45 +103,81 @@ export class PermissionRelay {
    * A plugin's `permission_request` arrived. Store it, send button DMs.
    */
   async handlePluginRequest(workspace: string, msg: PermissionRequestMsg): Promise<void> {
+    return this.handleRequest(
+      { kind: 'plugin', workspace },
+      'plugin',
+      msg.request_id,
+      msg.tool_name,
+      msg.description,
+      msg.input_preview,
+    )
+  }
+
+  /**
+   * CC's `cc_permission_request` arrived from an anonymous one-shot hook
+   * subprocess (architecture deltas §15). Conn is the hook's socket — daemon
+   * writes the `permission` reply back on it. Hook then exits.
+   */
+  async handleCcRequest(conn: Connection, msg: CcPermissionRequestMsg): Promise<void> {
+    return this.handleRequest(
+      { kind: 'hook', conn },
+      'cc-builtin',
+      msg.request_id,
+      msg.tool_name,
+      msg.description,
+      msg.input_preview,
+    )
+  }
+
+  /**
+   * Shared logic for plugin and hook requests. Only the `target` and the DM
+   * prompt prefix differ.
+   */
+  private async handleRequest(
+    target: PendingTarget,
+    source: 'plugin' | 'cc-builtin',
+    request_id: string,
+    tool_name: string,
+    description: string,
+    input_preview: string,
+  ): Promise<void> {
     const access = readAccessFile(this.paths.accessFile)
     if (access.allowFrom.length === 0) {
       log.warn(
-        `permission_request ${msg.request_id}: no allowFrom users — denying immediately`,
+        `${source === 'plugin' ? 'permission_request' : 'cc_permission_request'} ${request_id}: no allowFrom users — denying immediately`,
       )
-      this.dispatchToPlugin(workspace, msg.request_id, 'deny')
+      this.dispatchToTarget(target, request_id, 'deny')
       return
     }
 
     const entry: Pending = {
-      workspace,
-      tool_name: msg.tool_name,
-      description: msg.description,
-      input_preview: msg.input_preview,
+      target,
+      source,
+      tool_name,
+      description,
+      input_preview,
       messageRefs: [],
       expiresAt: Date.now() + PENDING_TTL_MS,
     }
-    this.pending.set(msg.request_id, entry)
+    this.pending.set(request_id, entry)
 
-    // Main prompt is intentionally minimal — tool name + a one-line summary.
-    // The request_id and `yes/no XXXXX` text fallback are folded into the
-    // "See more" expansion (handleButton 'more' branch) so they only surface
-    // when the user explicitly wants the technical detail or buttons fail.
-    const summary = msg.description.split('\n', 1)[0]?.trim() || ''
+    const prefix = source === 'cc-builtin' ? '🔐 CC tool' : '🔐 Permission'
+    const summary = description.split('\n', 1)[0]?.trim() || ''
     const text = summary
-      ? `🔐 Permission: ${msg.tool_name}\n${summary}`
-      : `🔐 Permission: ${msg.tool_name}`
+      ? `${prefix}: ${tool_name}\n${summary}`
+      : `${prefix}: ${tool_name}`
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
-        .setCustomId(`perm:more:${msg.request_id}`)
+        .setCustomId(`perm:more:${request_id}`)
         .setLabel('See more')
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
-        .setCustomId(`perm:allow:${msg.request_id}`)
+        .setCustomId(`perm:allow:${request_id}`)
         .setLabel('Allow')
         .setEmoji('✅')
         .setStyle(ButtonStyle.Success),
       new ButtonBuilder()
-        .setCustomId(`perm:deny:${msg.request_id}`)
+        .setCustomId(`perm:deny:${request_id}`)
         .setLabel('Deny')
         .setEmoji('❌')
         .setStyle(ButtonStyle.Danger),
@@ -135,14 +189,14 @@ export class PermissionRelay {
         const sent = await user.send({ content: text, components: [row] })
         entry.messageRefs.push({ userId, messageId: sent.id })
       } catch (e) {
-        log.warn(`permission_request: send to ${userId} failed: ${e}`)
+        log.warn(`permission DM to ${userId} failed: ${e}`)
       }
     }
 
     if (entry.messageRefs.length === 0) {
-      log.warn(`permission_request ${msg.request_id}: failed to reach any allowFrom user — denying`)
-      this.pending.delete(msg.request_id)
-      this.dispatchToPlugin(workspace, msg.request_id, 'deny')
+      log.warn(`permission ${request_id}: failed to reach any allowFrom user — denying`)
+      this.pending.delete(request_id)
+      this.dispatchToTarget(target, request_id, 'deny')
     }
   }
 
@@ -177,8 +231,9 @@ export class PermissionRelay {
       } catch {
         prettyInput = entry.input_preview
       }
+      const expandedPrefix = entry.source === 'cc-builtin' ? '🔐 CC tool' : '🔐 Permission'
       const expanded =
-        `🔐 Permission: ${entry.tool_name}\n\n` +
+        `${expandedPrefix}: ${entry.tool_name}\n\n` +
         `tool_name: ${entry.tool_name}\n` +
         `description: ${entry.description}\n` +
         `input_preview:\n\`\`\`json\n${prettyInput}\n\`\`\`\n\n` +
@@ -211,7 +266,7 @@ export class PermissionRelay {
         .catch(() => {})
       return true
     }
-    this.dispatchToPlugin(claimed.workspace, requestId!, behavior as 'allow' | 'deny')
+    this.dispatchToTarget(claimed.target, requestId!, behavior as 'allow' | 'deny')
     const label = behavior === 'allow' ? '✅ Allowed' : '❌ Denied'
     await interaction
       .update({ content: `${interaction.message.content}\n\n${label}`, components: [] })
@@ -248,27 +303,36 @@ export class PermissionRelay {
     const claimed = this.claimPending(requestId)
     if (!claimed) return false // already answered (or expired)
 
-    this.dispatchToPlugin(claimed.workspace, requestId, behavior)
+    this.dispatchToTarget(claimed.target, requestId, behavior)
     return true
   }
 
-  private dispatchToPlugin(
-    workspace: string,
+  private dispatchToTarget(
+    target: PendingTarget,
     request_id: string,
     behavior: 'allow' | 'deny',
   ): void {
-    const conn = this.registry.get(workspace)
-    if (!conn) {
-      log.warn(`permission ${request_id}: workspace ${workspace} no longer connected`)
-      return
-    }
     const msg: PermissionMsg = {
       type: 'permission',
       v: PROTOCOL_VERSION,
       request_id,
       behavior,
     }
-    conn.send(msg)
+    if (target.kind === 'plugin') {
+      const conn = this.registry.get(target.workspace)
+      if (!conn) {
+        log.warn(`permission ${request_id}: workspace ${target.workspace} no longer connected`)
+        return
+      }
+      conn.send(msg)
+    } else {
+      // Hook target — write directly to the conn that opened the request.
+      try {
+        target.conn.send(msg)
+      } catch (e) {
+        log.warn(`permission ${request_id}: hook conn write failed: ${e}`)
+      }
+    }
   }
 }
 
