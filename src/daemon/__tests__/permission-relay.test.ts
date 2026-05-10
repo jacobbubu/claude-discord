@@ -95,15 +95,25 @@ describe('PermissionRelay.handleTextResponse', () => {
   let sock: FakeSocket
 
   const seedPending = (rid: string) => {
-    // Use private internals via cast — slice 6 doesn't expose a public seed
+    // Use private internals via cast — public seed isn't exposed.
     ;(relay as unknown as {
-      pending: Map<string, { workspace: string; tool_name: string; description: string; input_preview: string; messageRefs: unknown[] }>
+      pending: Map<string, {
+        target: { kind: 'plugin'; workspace: string }
+        source: 'plugin' | 'cc-builtin'
+        tool_name: string
+        description: string
+        input_preview: string
+        messageRefs: unknown[]
+        expiresAt: number
+      }>
     }).pending.set(rid, {
-      workspace: 'foo',
+      target: { kind: 'plugin', workspace: 'foo' },
+      source: 'plugin',
       tool_name: 'reply',
       description: 'd',
       input_preview: '{}',
       messageRefs: [],
+      expiresAt: Date.now() + 60 * 60 * 1000,
     })
   }
 
@@ -411,6 +421,106 @@ describe('PermissionRelay.handleButton', () => {
       content: 'This permission request was already answered (or expired).',
       ephemeral: true,
     })
+    relay.stop()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// handleCcRequest path (architecture deltas §15) — anonymous one-shot hook
+// conn, dispatch back goes to the conn directly (not via registry).
+// ---------------------------------------------------------------------------
+
+describe('PermissionRelay.handleCcRequest', () => {
+  it('sends DM with "🔐 CC tool" prefix (different from plugin path)', async () => {
+    const { relay, dms } = setupRelayWithUserFetch()
+    const hookSock = new FakeSocket()
+    const hookConn = new Connection(hookSock as never)
+    await relay.handleCcRequest(hookConn, {
+      type: 'cc_permission_request',
+      v: 1,
+      request_id: 'abcde',
+      tool_name: 'Bash',
+      description: 'run ls',
+      input_preview: '{"command":"ls"}',
+    })
+    expect(dms.length).toBe(1)
+    expect(dms[0]!.content).toContain('🔐 CC tool: Bash')
+    expect(dms[0]!.content).not.toContain('🔐 Permission:')
+    relay.stop()
+  })
+
+  it('button allow dispatches `permission` reply directly to hook conn', async () => {
+    const { relay } = setupRelayWithUserFetch()
+    const hookSock = new FakeSocket()
+    const hookConn = new Connection(hookSock as never)
+    await relay.handleCcRequest(hookConn, {
+      type: 'cc_permission_request',
+      v: 1,
+      request_id: 'mnopq',
+      tool_name: 'Read',
+      description: '/tmp/x',
+      input_preview: '{}',
+    })
+    hookSock.writes.length = 0
+
+    const { interaction } = makeButtonInteraction({ customId: 'perm:allow:mnopq' })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await relay.handleButton(interaction as any)
+
+    expect(hookSock.writes.length).toBe(1)
+    const sent = JSON.parse(hookSock.writes[0]!.trim())
+    expect(sent.type).toBe('permission')
+    expect(sent.behavior).toBe('allow')
+    expect(sent.request_id).toBe('mnopq')
+    relay.stop()
+  })
+
+  it('"yes <code>" text response also dispatches to hook conn', async () => {
+    const { relay } = setupRelayWithUserFetch()
+    const hookSock = new FakeSocket()
+    const hookConn = new Connection(hookSock as never)
+    await relay.handleCcRequest(hookConn, {
+      type: 'cc_permission_request',
+      v: 1,
+      request_id: 'wxyzy',
+      tool_name: 'Bash',
+      description: 'd',
+      input_preview: '{}',
+    })
+    hookSock.writes.length = 0
+
+    const result = relay.handleTextResponse('u1', 'yes wxyzy')
+    expect(result).toBe(true)
+    expect(hookSock.writes.length).toBe(1)
+    const sent = JSON.parse(hookSock.writes[0]!.trim())
+    expect(sent.behavior).toBe('allow')
+    relay.stop()
+  })
+
+  it('empty allowFrom → immediate deny on hook conn', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'pr-cc-'))
+    mkdirSync(join(stateDir, 'inbox'), { recursive: true })
+    mkdirSync(join(stateDir, 'approved'), { recursive: true })
+    const paths = resolvePaths({ CLAUDE_DISCORD_STATE_DIR: stateDir } as NodeJS.ProcessEnv)
+    writeAccessFile(paths.accessFile, defaultAccess()) // empty allowFrom
+    const registry = new WorkspaceRegistry()
+    const relay = new PermissionRelay(makeMockGateway(), registry, paths)
+
+    const hookSock = new FakeSocket()
+    const hookConn = new Connection(hookSock as never)
+    await relay.handleCcRequest(hookConn, {
+      type: 'cc_permission_request',
+      v: 1,
+      request_id: 'zzzzz',
+      tool_name: 'Bash',
+      description: 'd',
+      input_preview: '{}',
+    })
+
+    expect(hookSock.writes.length).toBe(1)
+    const sent = JSON.parse(hookSock.writes[0]!.trim())
+    expect(sent.behavior).toBe('deny')
+    expect(sent.request_id).toBe('zzzzz')
     relay.stop()
   })
 })
