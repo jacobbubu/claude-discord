@@ -13,6 +13,7 @@ import { z } from 'zod'
 import { resolvePaths } from '../shared/paths.ts'
 import { PROTOCOL_VERSION } from '../protocol/version.ts'
 import type { WireMsg } from '../protocol/schema.ts'
+import { shouldConnectDaemon } from './connect-policy.ts'
 import { backoffDelayMs, delay } from './reconnect.ts'
 import {
   buildMcpServer,
@@ -183,7 +184,24 @@ async function connectLoop(): Promise<void> {
   }
 }
 
-await connectLoop()
+// Conditional daemon connect (architecture deltas §10): only connect if
+// parent CC was launched with `--channels plugin:<this-plugin>@<marketplace>`
+// (or `--dangerously-load-development-channels` referencing us). Otherwise
+// stay MCP-only — saves daemon registry from being polluted by every CC
+// session that has the plugin enabled but isn't actually serving Discord.
+//
+// Override: CLAUDE_DISCORD_FORCE_CONNECT=1 forces connect (debug / unusual
+// deployments where ppid lookup fails).
+const decision = shouldConnectDaemon()
+if (decision.connect) {
+  process.stderr.write(`plugin: connecting to daemon — ${decision.reason}\n`)
+  await connectLoop()
+} else {
+  process.stderr.write(
+    `plugin: skipping daemon connect — ${decision.reason}. ` +
+      `Set CLAUDE_DISCORD_FORCE_CONNECT=1 to override.\n`,
+  )
+}
 
 // Global safety net — without these the plugin process dies silently on
 // any unhandled rejection or sync throw, taking the CC session's MCP
