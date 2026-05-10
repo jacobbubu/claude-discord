@@ -38,6 +38,10 @@ export const AccessSchema = z.object({
   // (channel must be in `groups`); 'disabled' drops all guild channels.
   groupPolicy: z.enum(['open', 'opt-in', 'disabled']).default('open'),
   allowFrom: z.array(z.string()).default([]),
+  // Architecture deltas §17: defaults applied to channels NOT in `groups`
+  // when groupPolicy==='open'. Lets users opt out of "must @ bot" without
+  // touching every new channel. Ignored when groupPolicy is 'opt-in'/'disabled'.
+  groupPolicyDefaults: GroupPolicySchema.optional(),
   groups: z.record(z.string(), GroupPolicySchema).default({}),
   pending: z.record(z.string(), PendingEntrySchema).default({}),
   mentionPatterns: z.array(z.string()).optional(),
@@ -166,12 +170,15 @@ export function gate(a: Access, input: GateInput, now = Date.now()): GateResult 
   if (a.groupPolicy === 'disabled') return { action: 'drop' }
 
   const explicit = a.groups[input.guildChannelKey]
-  // For 'open': unknown channels use safe defaults (require mention to keep
-  // a basic safety net on broad surfaces). User can override per-channel.
+  // For 'open': unknown channels fall back to groupPolicyDefaults (deltas
+  // §17) if set, else the safe default {requireMention: true, allowFrom: []}.
+  // User can also override per-channel via `groups[<id>]`.
   // For 'opt-in': unknown channels are dropped (legacy strict behavior).
   const policy =
     explicit ??
-    (a.groupPolicy === 'open' ? { requireMention: true, allowFrom: [] } : null)
+    (a.groupPolicy === 'open'
+      ? a.groupPolicyDefaults ?? { requireMention: true, allowFrom: [] }
+      : null)
   if (!policy) return { action: 'drop' }
 
   if (policy.allowFrom.length > 0 && !policy.allowFrom.includes(input.senderId)) {

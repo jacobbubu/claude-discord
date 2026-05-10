@@ -1515,3 +1515,31 @@ hook 把 `cwd` (`process.cwd()`) 加进 `cc_permission_request` schema（新可�
 **对 spec 的关系：** §15 的 hook 行为有缺陷 — fan-out 全部 DM 是过宽默认。§16 是对 §15 的修订（不是反转）：fan-out 仍作为 fall back 保留，但精确路由优先。
 
 bump 0.0.10 → 0.0.11。
+
+### 17. `groupPolicyDefaults` — 无需逐 channel 关闭 mention
+
+§14 的 `groupPolicy: open` 让 bot 看得到的 channel 默认可路由，但用安全 fallback `requireMention: true`——单用户场景下"每个新 channel 都要 group add 一遍才能不 @"是冗余摩擦。
+
+新增 `groupPolicyDefaults` 字段，只在 `groupPolicy === 'open'` 时生效：
+
+```jsonc
+{
+  "groupPolicy": "open",
+  "groupPolicyDefaults": {
+    "requireMention": false,    // 新 channel 不用 @ 也能路由
+    "allowFrom": []             // 不限定 user (谁都行)
+  }
+}
+```
+
+`groups` 里显式条目继续 per-channel override 优先（先看 explicit，再看 defaults，再回到硬安全 fallback `requireMention: true`）。
+
+**安全设计：**
+
+- 仅 `open` 政策下读 defaults — `opt-in` / `disabled` 仍按原语义忽略 defaults
+- `defaults` 字段缺省（旧 access.json）等价于"安全默认"`{requireMention: true, allowFrom: []}`，**不破坏既有行为**
+- user 显式选 `requireMention: false` 是知情同意 — 该 admin 自己设定的 prompt-injection 暴露面
+
+**对 spec 的关系：** §14 引入 `groupPolicy`，§17 是 §14 的细化扩展，不是反转。FR-7 系列不动。
+
+bump 0.0.11 → 0.0.12。
