@@ -63,6 +63,45 @@ export function decideConnect(input: DecideInput): ConnectDecision {
 }
 
 /**
+ * Walk the parent process chain looking for the nearest `claude` process.
+ *
+ * Plugin spawn (via .mcp.json) → CC is the immediate parent (depth 1).
+ * Hook spawn (via settings.json `command` type) → CC → bash → bun → hook
+ * → CC may be 2-3 levels up. Walking handles both cases without
+ * special-casing.
+ *
+ * Returns the cmdline of the first ancestor whose comm/cmd starts with
+ * "claude", or null if no claude ancestor found within the walk limit.
+ */
+export function findClaudeAncestorCmdline(startPid = process.ppid, maxDepth = 8): string | null {
+  let pid = startPid
+  for (let depth = 0; depth < maxDepth; depth++) {
+    if (pid <= 1) return null
+    let line: string
+    try {
+      line = execSync(`ps -p ${pid} -o ppid=,command=`, {
+        encoding: 'utf8',
+        timeout: 1_000,
+      }).trim()
+    } catch {
+      return null
+    }
+    // Format: "<ppid> <command...>"
+    const m = line.match(/^\s*(\d+)\s+(.+)$/)
+    if (!m) return null
+    const parentPid = Number(m[1])
+    const cmd = m[2]!
+    // Match if the command's basename is "claude" or starts with "claude "
+    const basename = (cmd.split(' ')[0] ?? '').split('/').pop() ?? ''
+    if (basename === 'claude' || basename.startsWith('claude.')) {
+      return cmd
+    }
+    pid = parentPid
+  }
+  return null
+}
+
+/**
  * Real-world probe: read env, plugin.json, ppid cmdline, then call
  * decideConnect. Always returns a decision (no exceptions thrown).
  */
@@ -80,15 +119,9 @@ export function shouldConnectDaemon(): ConnectDecision {
     }
   }
 
-  let cmdline: string | null = null
-  try {
-    cmdline = execSync(`ps -p ${process.ppid} -o command=`, {
-      encoding: 'utf8',
-      timeout: 1_000,
-    })
-  } catch {
-    cmdline = null
-  }
+  // Walk the ancestor chain to find the actual claude process; handles both
+  // direct-spawn (plugin path) and shell-spawn (hook path) callers.
+  const cmdline = findClaudeAncestorCmdline()
 
   return decideConnect({ forceConnect, pluginRoot, manifest, cmdline })
 }
