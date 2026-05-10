@@ -10,7 +10,7 @@
     {
       "name": "claude-discord",
       "description": "Discord channel for Claude Code — multi-workspace gateway daemon variant. Single bot routes to N CC workspaces with channel-as-slot binding (`/use <workspace>`).",
-      "version": "0.0.4",
+      "version": "0.0.5",
       "author": {
         "name": "Rong Shen",
         "email": "rong.shen@gmail.com"
@@ -27,5 +27,5 @@
       ]
     }
   ],
-  "version": "0.0.4"
+  "version": "0.0.5"
 }
