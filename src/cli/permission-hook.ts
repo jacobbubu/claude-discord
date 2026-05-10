@@ -51,6 +51,54 @@ function isHarmless(toolName: string): boolean {
   return false
 }
 
+const MAX_DESC = 200
+
+/**
+ * Build a human-readable one-line summary of a tool call for the DM prompt.
+ *
+ * The default `<tool> call` is uselessly vague. We extract the tool's
+ * primary argument (Bash command, Read file_path, etc) so the user can
+ * decide without expanding "See more".
+ */
+export function buildToolDescription(toolName: string, toolInput: unknown): string {
+  if (typeof toolInput !== 'object' || toolInput === null) {
+    return `${toolName}: ${String(toolInput).slice(0, MAX_DESC)}`
+  }
+  const input = toolInput as Record<string, unknown>
+
+  // Tool-specific extractors. Order matters; first match wins.
+  const extractors: Array<[string, (i: Record<string, unknown>) => string | null]> = [
+    ['Bash', i => (typeof i.command === 'string' ? i.command : null)],
+    ['Read', i => (typeof i.file_path === 'string' ? i.file_path : null)],
+    ['Write', i => (typeof i.file_path === 'string' ? `write ${i.file_path}` : null)],
+    ['Edit', i => (typeof i.file_path === 'string' ? `edit ${i.file_path}` : null)],
+    ['MultiEdit', i => (typeof i.file_path === 'string' ? `edit ${i.file_path}` : null)],
+    ['NotebookEdit', i => (typeof i.notebook_path === 'string' ? `edit notebook ${i.notebook_path}` : null)],
+    ['Glob', i => (typeof i.pattern === 'string' ? `glob ${i.pattern}` : null)],
+    ['Grep', i => (typeof i.pattern === 'string' ? `grep ${i.pattern}` : null)],
+    ['WebFetch', i => (typeof i.url === 'string' ? `fetch ${i.url}` : null)],
+    ['WebSearch', i => (typeof i.query === 'string' ? `search ${i.query}` : null)],
+  ]
+  for (const [name, fn] of extractors) {
+    if (toolName === name) {
+      const v = fn(input)
+      if (v) return v.slice(0, MAX_DESC)
+    }
+  }
+
+  // Generic fallback: first string-valued field, prefer common arg names.
+  const preferred = ['command', 'file_path', 'path', 'pattern', 'query', 'url', 'name']
+  for (const k of preferred) {
+    const v = input[k]
+    if (typeof v === 'string' && v.length > 0) {
+      return `${toolName}: ${v}`.slice(0, MAX_DESC)
+    }
+  }
+  // Anything else: serialized first ~150 chars
+  const serialized = JSON.stringify(input).slice(0, 150)
+  return `${toolName}: ${serialized}`
+}
+
 function makeRequestId(): string {
   // 5-letter [a-km-z] (skip 'l') — matches schema regex
   const alphabet = 'abcdefghijkmnopqrstuvwxyz'
@@ -112,9 +160,7 @@ async function askDiscord(toolName: string, toolInput: unknown): Promise<'allow'
           v: PROTOCOL_VERSION,
           request_id: requestId,
           tool_name: toolName,
-          description: typeof toolInput === 'object' && toolInput !== null
-            ? `${toolName} call`
-            : String(toolInput),
+          description: buildToolDescription(toolName, toolInput),
           input_preview: JSON.stringify(toolInput),
           // Architecture deltas §16: daemon uses cwd to find the matching
           // workspace conn → routes the button DM to its lastInboundChatId.
@@ -183,4 +229,9 @@ async function main(): Promise<void> {
   }
 }
 
-void main()
+// Only auto-run when invoked as the entry script (CC spawning the hook).
+// Tests can import this file for buildToolDescription without triggering
+// stdin/socket I/O.
+if (import.meta.main) {
+  void main()
+}
