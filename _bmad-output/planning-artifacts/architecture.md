@@ -1577,3 +1577,30 @@ bump 0.0.13 → 0.0.14。
 **对 spec 的关系：** Epic 5 / FR-5 的 plugin 权限 Q&A 协议不动；本扩展只丰富 CC 内置 tool（hook 触发的）那条路径的 button row。
 
 bump 0.0.14 → 0.0.15。
+
+### 21. Hook 探测 `--dangerously-skip-permissions` → 直接 emit 'allow'
+
+§18 walker 让 hook 区分 channel-mode（弹 Discord）vs 非 channel-mode（emit 'ask'）。但 channel-mode CC + `--dangerously-skip-permissions` 共存的场景被忽略：CC user 显式说"unattended skip 所有权限询问"，hook 仍发 cc_permission_request 等 Discord 点 button — 矛盾。
+
+**修：** hook 启动时除探测 channel-mode，还查 cmdline 是否含 `--dangerously-skip-permissions`：
+
+- 含 → 直接 emit 'allow'（user 已知情同意）
+- 不含 + channel-mode → 走 §16 路径
+- 不含 + 非 channel-mode → emit 'ask'
+
+**安全：** 这是 user 启动 CC 的明确 flag，hook 顺从无需额外 confirm。等价 user 跑 console-only `--dangerously-skip-permissions` CC 时 CC 内部不弹的语义。
+
+bump 0.0.15 → 0.0.16。
+
+### 22. Hook 同时检查 settings.allow（§20 真生效）
+
+§20 写 tool_name 到 `~/.claude/settings.json` `permissions.allow`，期望 CC 后续直接通过该 tool。但 CC 的 PreToolUse hook **优先于** settings.allow 跑（hook 总是 spawn，settings.allow 只在 hook 返 'ask' 时才检查）—— 所以 §20 写入对 hook 无效，user "Allow always" 之后仍弹。
+
+**修：** hook 自己读 `~/.claude/settings.json`，检查 `permissions.allow` 命中：
+
+- 完全匹配 `Bash` / `Edit`
+- 模式匹配 `Bash(*)` / `Bash(git *)` 等带括号格式（与 CC 自家匹配规则一致）
+
+命中即 emit 'allow' 短路，不调 daemon → 不弹 Discord。
+
+跟 §21 一并 in 0.0.16。

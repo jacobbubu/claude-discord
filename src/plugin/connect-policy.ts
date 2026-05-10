@@ -102,6 +102,16 @@ export function findClaudeAncestorCmdline(startPid = process.ppid, maxDepth = 8)
 }
 
 /**
+ * Architecture deltas §21: detect whether the parent claude was launched
+ * with `--dangerously-skip-permissions`. Hook uses this to short-circuit
+ * → emit 'allow' instead of asking Discord.
+ */
+export function sniffDangerouslySkipPermissions(cmdline: string | null): boolean {
+  if (!cmdline) return false
+  return cmdline.includes('--dangerously-skip-permissions')
+}
+
+/**
  * Real-world probe: read env, plugin.json, ppid cmdline, then call
  * decideConnect. Always returns a decision (no exceptions thrown).
  */
