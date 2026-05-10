@@ -180,7 +180,10 @@ export class PermissionRelay {
     const text = summary
       ? `${prefix}: ${tool_name}\n${summary}`
       : `${prefix}: ${tool_name}`
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    // Architecture deltas §20: "Allow always" persists tool to settings.json
+    // permissions.allow → CC bypasses subsequent calls. Only for cc-builtin
+    // (plugin tools have their own pre-allowlist flow).
+    const buttons: ButtonBuilder[] = [
       new ButtonBuilder()
         .setCustomId(`perm:more:${request_id}`)
         .setLabel('See more')
@@ -190,12 +193,24 @@ export class PermissionRelay {
         .setLabel('Allow')
         .setEmoji('✅')
         .setStyle(ButtonStyle.Success),
+    ]
+    if (source === 'cc-builtin') {
+      buttons.push(
+        new ButtonBuilder()
+          .setCustomId(`perm:always:${request_id}`)
+          .setLabel('Allow always')
+          .setEmoji('🔓')
+          .setStyle(ButtonStyle.Success),
+      )
+    }
+    buttons.push(
       new ButtonBuilder()
         .setCustomId(`perm:deny:${request_id}`)
         .setLabel('Deny')
         .setEmoji('❌')
         .setStyle(ButtonStyle.Danger),
     )
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons)
 
     // Architecture deltas §16: prefer sending the button to the prompt's
     // source chat (channel or DM where the inbound came from). Fall back
@@ -241,7 +256,7 @@ export class PermissionRelay {
    * interaction was a permission button (so the slash router skips it).
    */
   async handleButton(interaction: ButtonInteraction): Promise<boolean> {
-    const m = /^perm:(allow|deny|more):([a-km-z]{5})$/.exec(interaction.customId)
+    const m = /^perm:(allow|deny|more|always):([a-km-z]{5})$/.exec(interaction.customId)
     if (!m) return false
 
     const access = readAccessFile(this.paths.accessFile)
@@ -302,8 +317,19 @@ export class PermissionRelay {
         .catch(() => {})
       return true
     }
-    this.dispatchToTarget(claimed.target, requestId!, behavior as 'allow' | 'deny')
-    const label = behavior === 'allow' ? '✅ Allowed' : '❌ Denied'
+    // §20: 'always' = allow this call AND persist tool_name to settings.json
+    // permissions.allow so CC bypasses subsequent calls.
+    const effectiveBehavior: 'allow' | 'deny' =
+      behavior === 'always' ? 'allow' : (behavior as 'allow' | 'deny')
+    this.dispatchToTarget(claimed.target, requestId!, effectiveBehavior)
+
+    let label = effectiveBehavior === 'allow' ? '✅ Allowed' : '❌ Denied'
+    if (behavior === 'always') {
+      const ok = persistAllowRule(claimed.tool_name)
+      label = ok
+        ? `✅ Allowed always (\`${claimed.tool_name}\` added to settings.json)`
+        : `✅ Allowed (settings.json write failed; this call only)`
+    }
     await interaction
       .update({ content: `${interaction.message.content}\n\n${label}`, components: [] })
       .catch(() => {})
@@ -382,4 +408,38 @@ export function makeRequestId(): string {
     s += alphabet[Math.floor(Math.random() * alphabet.length)]
   }
   return s
+}
+
+/**
+ * §20: append a tool name to ~/.claude/settings.json `permissions.allow`.
+ * Idempotent (no duplicate entries). Returns true on successful write.
+ *
+ * Tests can pass an explicit path; production callers omit it (defaults
+ * to the user-level settings.json).
+ */
+export function persistAllowRule(toolName: string, settingsPath?: string): boolean {
+  try {
+    const home = process.env.HOME ?? ''
+    const path = settingsPath ?? `${home}/.claude/settings.json`
+    if (!path || path === '/.claude/settings.json') return false
+    const fs = require('node:fs') as typeof import('node:fs')
+    let data: Record<string, unknown> = {}
+    if (fs.existsSync(path)) {
+      try {
+        data = JSON.parse(fs.readFileSync(path, 'utf8')) as Record<string, unknown>
+      } catch {
+        return false
+      }
+    }
+    const perms = (data.permissions ??= {} as Record<string, unknown>) as Record<string, unknown>
+    const allow = (perms.allow ??= [] as string[]) as string[]
+    if (!allow.includes(toolName)) {
+      allow.push(toolName)
+    }
+    fs.writeFileSync(path, JSON.stringify(data, null, 2) + '\n')
+    return true
+  } catch (e) {
+    log.warn(`persistAllowRule(${toolName}) failed: ${e}`)
+    return false
+  }
 }
