@@ -1191,3 +1191,95 @@ plugin v2 ↔ daemon v1 : daemon 不识别 v=2 → reject; plugin reconnect 失�
 7. **daemon 升级时的连接迁移**：如果 daemon 进程换新版本，所有 plugin 连接断开重连——这个间隙的 Discord 消息怎么办？倾向放弃（不做消息缓冲），plugin reconnect 后正常路由
 
 这 7 项是开发阶段第一个 PR 之前需要定下来的细节，但不影响整体架构判断。
+
+---
+
+## Implementation deltas（stage 2 之后）
+
+> 截至 0.0.3 (2026-05-09)。stage 2 e2e 框架与真 Discord 实测暴露出原架构没覆盖或留白的细节，这里**追加**而非改写主文档，让 commit 历史和决策追溯保持线性。
+
+### 1. Plugin 自身就是 marketplace（self-host）
+
+原架构假设 plugin 通过 `.mcp.json` + CC 自动 spawn 即可工作。实测发现 CC v2.1.138 的 channel mode 只接受**已注册到 marketplace 的 plugin**——`plugin:<name>@<marketplace>` 引用模式，server 模式 + `--mcp-config` 不被认作 channel-eligible。
+
+落地（PR #27）：本仓库自身就是 marketplace。在 repo 根加 `.claude-plugin/{plugin.json, marketplace.json}`，user 端 `/plugin marketplace add <git-url>` + `/plugin install` 后即可 `--channels plugin:claude-discord@jacobbubu`。
+
+### 2. Channel mode 还需 macOS managed-settings 配置
+
+CC v2.1.138 进一步要求第三方 marketplace plugin 必须在 **macOS 系统级 managed-settings** (`/Library/Application Support/ClaudeCode/managed-settings.json`，root 写入) 的 `allowedChannelPlugins` 数组列出，否则 dev flag 也救不了。
+
+落地：README "Channel mode" 章节写明三段配置（marketplace add → managed-settings → `--channels` 启动）。这是 anthropic CLI 设计决定，不是协议 gap。
+
+### 3. Workspace name 撞名自增的具体行为
+
+§4.2 / L127 / L244 写"cwd basename，撞名 +序号"。stage 2 第一版只用 basename 没自增，导致两个 CC 同 cwd 跑时 daemon 互相 boot，触发 reconnect/re-register thrash。
+
+落地（PR #34）：`socket-server.ts handleRegister` 加循环 `<basename>-2`、`-3`、…，1000 次后 `register_reject` 关连接。`log.info` 标 `auto-suffixed`。
+
+### 4. Plugin 在 parent CC 退出时立即退出
+
+原 §4.2 没说 plugin 该如何响应 parent CC 退出。stage 2 实测发现 plugin 不会跟随退出，daemon 也死时进入 ~98% CPU loop、SIGTERM 不响应。
+
+落地（PR #31）：`StdioServerTransport.onclose` + `process.stdin.on('end'/'close')` 双层兜底 → `process.exit(0)`。
+
+### 5. Slash 命令支持 DM context
+
+原架构 §4.3 / Epic 4 假设 slash 命令在 guild channel 用。实测 user 想在 DM 里 `/list` 等，但 per-guild 注册的命令在 DM 里不出现。
+
+落地（PR #35）：每个 SlashCommandBuilder 加 `.setContexts(Guild, BotDM, PrivateChannel)`；`registerSlashCommands` 增加 `Routes.applicationCommands` 全局注册（DM 路径）。Per-guild 注册保留供 instant；global ~1h 传播到 DM。
+
+### 6. Permission DM 主消息折叠 request_id
+
+原 Epic 5 没规定主消息长什么样。stage 2 第一版直接展示 5 字符 `request_id`（"reply with `yes XXXXX`"），UX 反馈过度泄漏内部 token。
+
+落地（PR #30）：主消息只显 `🔐 Permission: <tool>` + description 首行；`request_id` 与 `yes/no XXXXX` 文字回退说明折叠到 "See more" 展开内容里，仅按钮失效场景作兜底。
+
+### 7. Discord rate limit 委托给 SDK
+
+原 NFR-2 写 "daemon 内部统一队列，命中限流时排队，不丢请求"。落地：discord.js v14 REST 自带 429 retry + queue（`retries=3`，`RateLimitData filter`），SDK 直接满足 spec。daemon 加了 `client.rest.on('rateLimited', ...)` 监听日志（NFR-4 可观测性，PR #37），未做 daemon-level 队列。
+
+### 8. 测试架构
+
+原 §10 写 Unit / Integration / E2E / Live，stage 2 落地为 4 档：
+
+| 档 | 工具 | 默认 |
+|---|---|---|
+| Unit + Integration | vitest，184 tests | ✅ |
+| Controlled e2e（mock-plugin 真 socket） | 9 文件 / 18 用例 | ✅ |
+| Live e2e #1（真插件 + MCP SDK + mock client） | 1 用例 | ✅ |
+| Live e2e #2（真 `claude --print` + mock client） | 1 用例 | gated `CLAUDE_DISCORD_LIVE=1` |
+
+总覆盖率 77.08%（CHANGELOG 0.0.3）。真 Discord 一次性走完 LIVE_TEST.md 全套人工 walk-through。
+
+### 9. 仍未实施的欠账
+
+- **SC-1 7 天 soak**：`scripts/perf-sample.sh` 已写，daemon 还没挂 7 天采样
+- **FR-5.4 embed 总结**：PRD 自标 P2 day-2，跟踪 #38
+- **rate limit daemon-level retry queue**：当前完全委托 discord.js
+- **NFR-1 idle CPU/内存压测**：未量化
+
+详见 `_bmad-output/verification-matrix.md` + `_bmad-output/fr-audit-reviewed.md`。
+
+### 10. Plugin 按 parent CC channel-mode 条件连接 daemon
+
+原 §4.2 / FR-2.1 写 "CC 启动时 plugin 自动连接 daemon"——隐含 always-connect。实测发现：
+
+- 用户机器上同时跑多个 claude TUI（不同项目、cmux session 等）每个都自动加载本 plugin 并 register 到 daemon
+- daemon registry 充斥"客串"workspace（不真为 Discord 服务的 console-only CC）
+- inbound fallback 路由可能落到这些"客串"workspace，那边的 CC 不在 channel mode、无法响应
+- 用户体验：在 Discord 发消息没反应，daemon log 看到路由到的 workspace 名跟期望不符
+
+**修订（codex/conditional-connect 在做）**：plugin 启动时通过 parent cmdline 探测当前 CC 是否在 channel mode 引用了**本 plugin**，是才连 daemon，否则保持 MCP server 起着但跳过 socket connect。
+
+判定：
+
+1. **plugin 标识权威源**：从 `${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json` 读 `name` 字段（不在 plugin code 里写死，重命名 plugin 自动跟随）
+2. **parent cmdline 探测**：`ps -p ${process.ppid} -o command=` 拿到 CC 完整启动命令，含 `plugin:<myName>@*` 字符串则视为对本 plugin 的 channel 引用（同时覆盖 `--channels` 与 `--dangerously-load-development-channels` 两路径）
+3. **降级保守 connect**：`CLAUDE_PLUGIN_ROOT` 缺失（dev/manual 启动）、`plugin.json` 不可读、`ps` 拿不到 cmdline，一律保守 `connect`（兼容当前行为）
+4. **override**：`CLAUDE_DISCORD_FORCE_CONNECT=1` 强制 connect（debug / 特殊部署）
+
+**outbound 影响**：console-mode CC 仍能 spawn plugin、看到 reply 等 5 个 MCP tool，但调用时拿到 `daemon offline / not connected` 错误（沿用现有 `disconnectedResult()`）。等价于不带 channel mode 的 CC 不该用 reply tool。
+
+**对 spec 的关系**：FR-2.1 接收标准里"CC 启动时 plugin 自动连接 daemon"语义保留——plugin 仍在 spawn 时启动且**有意图为 channel mode 服务**就连。条件触发是细化，非反转（spec 隐含的初始假设是"会的 CC 都是 channel mode"，实测发现不是）。
+
+跟踪 PR + tests：实施时一并补 controlled e2e 用例覆盖（mock parent cmdline 路径）。
