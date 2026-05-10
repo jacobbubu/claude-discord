@@ -85,6 +85,8 @@ describe('inbound-router integration', () => {
     conn.workspace = 'foo'
     conn.state = 'registered'
     env.registry.register('foo', conn)
+    // Architecture deltas §13: explicit binding required (no implicit fallback)
+    env.routing.set('cdm1', 'foo', Date.now())
 
     handler(
       makeFakeMessage({ channelId: 'cdm1', authorId: 'u1', content: 'hello world' }) as never,
@@ -175,6 +177,8 @@ describe('inbound-router integration', () => {
     conn.workspace = 'foo'
     conn.state = 'registered'
     env.registry.register('foo', conn)
+    // Architecture deltas §13: explicit binding required.
+    env.routing.set('cg1', 'foo', Date.now())
 
     handler(
       makeFakeMessage({

@@ -1346,3 +1346,30 @@ PRD §11 FR-7.2 提到 `/use` 切换时发"✅ switched to X"消息（inline 一
 **对 spec 的关系：** FR-7.2 "✅ switched to X" 消息保留不变；新增 presence 同步是 UX 增强，**不修改既有验收标准**，纯加项。
 
 跟踪 PR：mock `client.user.setPresence` 验证调用参数；bump 0.0.5 → 0.0.6。
+
+### 13. 取消 inbound 沉默路由 fallback，改为显式提示
+
+PRD §11 FR-7.3 明确把 "没切就打字 = 沉默路由" 当作 feature——channel 没绑定时 daemon 自动 fallback 到 `registry.list().at(-1)`（most-recent registered workspace）并 silent 路由。spec 的假设是"启发式选 most-recent active 比强迫 user 总是 /use 体验更好"。
+
+**stage 2 实测发现这个 feature 不对：**
+
+- pre-#45 时代 console-only CC 会自动连 daemon、污染 registry——fallback 命中"上次启动的"那个 CC，但 user 心里期望的是另一个
+- 即使 #45（conditional connect）只让 channel-mode CC 连 daemon，fallback 目标仍随启停顺序漂移；user 无 UI 反馈，体验是"消息发出去石沉大海或被路由到没看到的 CC"
+- 跟"channel as slot"的产品理念矛盾——slot 应该 explicit 绑定才有意义，implicit 猜不是 slot
+
+**改动（PR codex/explicit-binding）：** 删 fallback 整段，inbound 没绑定时 daemon 主动回提示：
+
+```
+no binding + 0 workspace 在线
+  → "no workspace online — start one with `claude --channels plugin:claude-discord@<mp>` ..."
+
+no binding + ≥1 workspace 在线
+  → "this channel has no workspace bound. run `/use <workspace>` to bind.
+      active workspaces: foo, bar, free-research-2"
+```
+
+**对 spec 的关系：** **反转 FR-7.3**——"沉默路由"被取代为"显式提示"。是有意偏离，原 spec 的假设没经实战验证就把 fallback 当 feature；deltas 章节作为修订入口记下来，主文档 FR-7.3 暂不动（reviewer 可看到原意图 + 改回的理由）。
+
+**测试影响：** controlled-e2e #3 / #5 / 09 / 10 等用例之前依赖 fallback 路由，现在需要 user 显式 `routing.set(...)` 后再 inject inbound。已逐个更新断言。
+
+跟踪 PR：bump 0.0.6 → 0.0.7。
