@@ -82,6 +82,15 @@ const TOOL_DEFS = [
       required: ['chat_id', 'message_id'],
     },
   },
+  {
+    name: 'whoami',
+    description:
+      'Return the current plugin runtime identity (workspace name, daemon socket, agent, plugin version, daemon connection status). No-args. Use to confirm which workspace this CC is registered as — useful when names auto-suffix on collision.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
 ] as const
 
 /** What the MCP server needs from the rest of the plugin. */

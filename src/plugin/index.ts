@@ -9,12 +9,15 @@
  * outstanding tool calls fail fast with clear errors.
  */
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { z } from 'zod'
 import { resolvePaths } from '../shared/paths.ts'
 import { PROTOCOL_VERSION } from '../protocol/version.ts'
 import type { WireMsg } from '../protocol/schema.ts'
 import { shouldConnectDaemon } from './connect-policy.ts'
 import { backoffDelayMs, delay } from './reconnect.ts'
+import { buildWhoamiResult } from './whoami.ts'
 import {
   buildMcpServer,
   connectMcpStdio,
@@ -52,7 +55,32 @@ const state = {
   heartbeatTimer: null as ReturnType<typeof setInterval> | null,
 }
 
+// Plugin version — read once from manifest at the cache root if available,
+// otherwise '?'. Used by whoami to self-report.
+const PLUGIN_VERSION = (() => {
+  try {
+    const root = process.env.CLAUDE_PLUGIN_ROOT
+    if (!root) return '?'
+    const txt = readFileSync(join(root, '.claude-plugin', 'plugin.json'), 'utf8')
+    return (JSON.parse(txt) as { version?: string }).version ?? '?'
+  } catch {
+    return '?'
+  }
+})()
+
 const dispatch: ToolDispatcher = (tool, args) => {
+  if (tool === 'whoami') {
+    // No-args local introspection — doesn't go through the daemon.
+    return Promise.resolve(
+      buildWhoamiResult({
+        workspace: state.workspace,
+        daemon_socket: SOCKET_PATH,
+        agent: PLUGIN_AGENT,
+        plugin_version: PLUGIN_VERSION,
+        connected: state.client !== null,
+      }),
+    )
+  }
   if (!state.bridge) return Promise.resolve(disconnectedResult())
   return state.bridge.call(tool, args)
 }

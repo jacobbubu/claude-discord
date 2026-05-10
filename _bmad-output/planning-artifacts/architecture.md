@@ -1283,3 +1283,44 @@ CC v2.1.138 进一步要求第三方 marketplace plugin 必须在 **macOS 系统
 **对 spec 的关系**：FR-2.1 接收标准里"CC 启动时 plugin 自动连接 daemon"语义保留——plugin 仍在 spawn 时启动且**有意图为 channel mode 服务**就连。条件触发是细化，非反转（spec 隐含的初始假设是"会的 CC 都是 channel mode"，实测发现不是）。
 
 跟踪 PR + tests：实施时一并补 controlled e2e 用例覆盖（mock parent cmdline 路径）。
+
+### 11. `whoami` MCP tool — plugin 自我披露 workspace 身份
+
+PRD §11 Epic 6 列了 5 个 MCP tool（reply / react / edit_message / fetch_messages / download_attachment）。stage 2 真 Discord 实测发现一个 UX 缺口：**user 想知道当前 plugin 注册到 daemon 的 workspace name 是什么**——尤其在 #34（撞名自增）后 workspace 名可能被改成 `<basename>-2` / `-3`，user 在 cc pane 不容易看出来。
+
+plugin 已经在 stderr 写了 `plugin: registered as workspace=<name>`（`src/plugin/index.ts:105`），但 CC TUI 把 MCP server stderr 收走默认不显示，user 要 `claude --debug=mcp` 启动才能看见。
+
+**新增工具** `whoami` — 无参，返回当前 plugin 的运行时身份：
+
+```jsonc
+// tool_call
+{ "tool": "whoami", "args": {} }
+
+// tool_result
+{
+  "ok": true,
+  "result": {
+    "workspace": "claude_discord-2",
+    "daemon_socket": "/Users/x/.claude/channels/discord/daemon.sock",
+    "agent": "claude-code",
+    "plugin_version": "0.0.4",
+    "connected": true
+  }
+}
+```
+
+**用法：**
+
+- User prompt: "what workspace am I bound to?" → Claude 调 `whoami` → 回答
+- Claude self-introspection: tool 调用后能确认"我现在是 foo-2 而不是 foo"，避免假设错误
+- Debug 时 `claude --print "use whoami"` 可一行确认环境
+
+**实施位置：**
+
+- `src/plugin/mcp-server.ts buildMcpServer`：tools list 加一条 `whoami`
+- `src/plugin/tool-handlers.ts`：dispatch 路径加 case `whoami` 直接读 plugin 的 `state` 而不是过 daemon（daemon 不知道某个 plugin connection 自报身份是什么——daemon 只知道 conn → workspace 映射）
+- 不需要 daemon 端任何改动（whoami 是 plugin-local 信息）
+
+**对 spec 的关系：** Epic 6 工具集从 5 → 6。这是非破坏性扩展，新工具与既有 5 个独立。FR-6.1..6.5 不变；新 FR-6.6 待补（如果走主文档修订路线；当前用 deltas §11 兜底）。
+
+跟踪 PR：实施 + 加 unit test 验证（同样的"日内可被 mock 调用"模式）。
