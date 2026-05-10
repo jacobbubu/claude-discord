@@ -141,6 +141,10 @@ export const CcPermissionRequestSchema = z.object({
   tool_name: z.string(),
   description: z.string(),
   input_preview: z.string(),
+  // Architecture deltas §16: hook reports its parent CC's cwd. daemon uses
+  // it to find the matching workspace conn and route the button DM to that
+  // workspace's last-inbound chat_id instead of fan-out to allowFrom DMs.
+  cwd: z.string().optional(),
 })
 export type CcPermissionRequestMsg = z.infer<typeof CcPermissionRequestSchema>
 

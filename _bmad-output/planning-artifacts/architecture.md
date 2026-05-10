@@ -1458,3 +1458,60 @@ CC 收到退出码 → 继续 / 拒绝 tool 调用
 跟踪 PR：分两步——
 - **PR a (spec only)**：本提交，添加 §15 spec
 - **PR b (implementation)**：随后实施。bump 0.0.8 → 0.0.9。
+
+### 16. 源-决策同源 — 权限请求弹回 prompt 来源所在 chat
+
+§15 实施后实测发现 fan-out 到 DM 的默认有两处问题：
+
+1. **跨 session 卷入**：hook 装在 `~/.claude/settings.json` 是 user 全局生效，所有 Claude session（cmux session、其他项目 console-only Claude）都触发 hook → 它们的 tool 调用都会被卷到 Discord 等 user 点按钮，跟它们的实际 prompt 源（cmux UI / 终端）错位
+
+2. **channel-mode 内部源-错位**：即便确实是 channel-mode CC，user 从 guild channel A 发的 prompt 触发的工具权限被弹到 DM，user 仍然要换地方看才能批准
+
+**理想原则：源-决策同源** — 权限请求弹回它实际的来源 chat：
+
+| Prompt 源 | 期望权限弹位置 |
+|---|---|
+| cc TUI 直接打字（cmux / console-only） | cc TUI（默认 flow） |
+| Discord DM | 同一 DM |
+| Discord guild channel A | guild channel A（同 channel 的 allowFrom 用户都能看到） |
+
+**实施分两层：**
+
+**层 1：hook 早退（解决跨 session 卷入）**
+
+`src/cli/permission-hook.ts` 启动后立即探测 parent CC 是否 channel-mode（复用 PR #45 `src/plugin/connect-policy.ts` 的 `decideConnect` 同款 ppid + cmdline + plugin.json 检测）。**不在 channel-mode 立即 emit `'ask'` 退出**，让 CC 走默认 permission flow。这样 cmux / console-only / 别的 channel-mode-not-us 的 Claude session 不再被卷入。
+
+**层 2：hook 把权限请求路由回原 chat（解决 channel mode 内部错位）**
+
+hook 把 `cwd` (`process.cwd()`) 加进 `cc_permission_request` schema（新可选字段）；daemon 用 cwd 在 registry 反查这个 workspace 的 connection。daemon 端：
+
+- `Connection` 加可选字段 `lastInboundChatId: string | null`
+- `inbound-router.ts` 路由 inbound 给 plugin 之前，给 conn.lastInboundChatId = msg.channelId
+- `permission-relay.handleCcRequest` 现在用这条信息：
+  - 找到匹配 cwd 的 conn → 有 `lastInboundChatId` → 把按钮消息**发到那个 chat_id**（不再 fan-out DM）
+  - 找不到 / 没 lastInboundChatId → fall back 到 §15 的 fan-out allowFrom DM（保留兜底）
+
+**协议扩展：**
+
+```jsonc
+{
+  "type": "cc_permission_request",
+  "v": 1,
+  "request_id": "...",
+  "tool_name": "Bash",
+  "description": "...",
+  "input_preview": "...",
+  "cwd": "/Users/x/project"   // 新加，optional
+}
+```
+
+**边界：**
+
+- DM 入站 → lastInboundChatId 是 DM channel id → 按钮发 DM ✓
+- guild channel 入站 → 按钮发 guild channel（@allowFrom 用户能看到）✓
+- channel-mode CC 但 user 在 TUI 直接打字（罕见）→ lastInboundChatId 还是上次 Discord 入站的 chat_id，按钮发错位置但不致命；或者 cwd 反查不到 conn → fall back DM（也错位但更少见）
+- 多 user channel：按钮所有 allowFrom 都能点，先点者赢（claimPending 已 atomic）
+
+**对 spec 的关系：** §15 的 hook 行为有缺陷 — fan-out 全部 DM 是过宽默认。§16 是对 §15 的修订（不是反转）：fan-out 仍作为 fall back 保留，但精确路由优先。
+
+bump 0.0.10 → 0.0.11。

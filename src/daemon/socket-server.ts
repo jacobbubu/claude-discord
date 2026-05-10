@@ -266,6 +266,7 @@ function handleRegister(
   conn.workspace = name
   conn.agent = msg.agent
   conn.capabilities = msg.capabilities
+  conn.cwd = msg.cwd
   conn.state = 'registered'
   registry.register(name, conn)
 

@@ -127,6 +127,11 @@ async function handle(deps: InboundRouterDeps, msg: Message): Promise<void> {
     return
   }
 
+  // Architecture deltas §16: remember the last inbound's chat_id so
+  // permission-relay can route cc_permission_request buttons back here
+  // (instead of fanning out to every allowFrom user's DM).
+  conn.lastInboundChatId = msg.channelId
+
   // UX: tell the user we're processing. Discord shows "claude is typing…"
   // for ~10s, usually enough to cover Claude's first-token latency.
   if ('sendTyping' in msg.channel) {

@@ -15,6 +15,13 @@ export class Connection {
   agent: string | null = null
   capabilities: string[] = []
   lastActivityTs: number = Date.now()
+  /** Plugin's cwd from register handshake. Used by daemon to reverse-look-up
+   *  workspace by cwd for the cc_permission_request hook (deltas §16). */
+  cwd: string | null = null
+  /** Last inbound message's chat_id (DM channel id or guild channel id),
+   *  set by inbound-router before forwarding. Used by deltas §16 to route
+   *  cc_permission_request buttons back to the prompt's source chat. */
+  lastInboundChatId: string | null = null
 
   constructor(public readonly socket: Socket) {}
 

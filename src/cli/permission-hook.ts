@@ -27,6 +27,7 @@ import { resolvePaths } from '../shared/paths.ts'
 import { encode, LineBuffer } from '../protocol/ndjson.ts'
 import { WireSchema } from '../protocol/schema.ts'
 import { PROTOCOL_VERSION } from '../protocol/version.ts'
+import { shouldConnectDaemon } from '../plugin/connect-policy.ts'
 
 const TIMEOUT_MS = 60 * 60 * 1000 // 1h — match permission-relay TTL
 
@@ -115,6 +116,9 @@ async function askDiscord(toolName: string, toolInput: unknown): Promise<'allow'
             ? `${toolName} call`
             : String(toolInput),
           input_preview: JSON.stringify(toolInput),
+          // Architecture deltas §16: daemon uses cwd to find the matching
+          // workspace conn → routes the button DM to its lastInboundChatId.
+          cwd: process.cwd(),
         }),
       )
     })
@@ -142,6 +146,16 @@ async function askDiscord(toolName: string, toolInput: unknown): Promise<'allow'
 }
 
 async function main(): Promise<void> {
+  // Architecture deltas §16: only intercept when parent CC is actually
+  // running our plugin in channel-mode. Other Claude sessions (cmux, plain
+  // console) get 'ask' so they fall back to their own permission UI —
+  // prompt and decision stay in the same place (source-bound principle).
+  const decision = shouldConnectDaemon()
+  if (!decision.connect) {
+    emitDecision('ask', `permission-hook: skip (${decision.reason})`)
+    return
+  }
+
   const raw = await readStdin().catch(() => '')
   let payload: { tool_name?: string; tool_input?: unknown } = {}
   try {
@@ -159,8 +173,8 @@ async function main(): Promise<void> {
   }
 
   try {
-    const decision = await askDiscord(toolName, payload.tool_input ?? {})
-    emitDecision(decision)
+    const verdict = await askDiscord(toolName, payload.tool_input ?? {})
+    emitDecision(verdict)
   } catch (e) {
     // Daemon unreachable / timeout / etc — let CC handle via its normal
     // gate (TUI prompt). Don't auto-deny: that would block all tools when
