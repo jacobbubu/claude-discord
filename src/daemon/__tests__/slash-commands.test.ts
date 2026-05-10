@@ -111,6 +111,9 @@ describe('slash-commands', () => {
         channels: {
           fetch: vi.fn().mockResolvedValue(null), // applyTopic falls through quietly
         },
+        user: {
+          setPresence: vi.fn(),
+        },
       } as never,
       send: vi.fn().mockResolvedValue({ id: 'm-fake' }),
       isRecentSent: () => false,
@@ -203,6 +206,22 @@ describe('slash-commands', () => {
       expect(replyContent(reply)).toContain('✅ switched to foo')
       expect(routing.get('c-1')?.workspace).toBe('foo')
     })
+
+    it('updates bot custom status (presence) on switch (deltas §12)', async () => {
+      registerWorkspace('foo')
+      const { interaction } = makeChatInputInteraction({
+        commandName: 'use',
+        channelId: 'c-1',
+        string: { workspace: 'foo' },
+      })
+      dispatch(interaction)
+      await new Promise(r => setImmediate(r))
+      const setPresence = (gateway.client as unknown as { user: { setPresence: ReturnType<typeof vi.fn> } }).user.setPresence
+      expect(setPresence).toHaveBeenCalled()
+      const arg = setPresence.mock.calls[0]![0] as { activities: Array<{ name: string }>; status: string }
+      expect(arg.activities[0]!.name).toBe('foo')
+      expect(arg.status).toBe('online')
+    })
   })
 
   describe('/which', () => {
@@ -250,6 +269,19 @@ describe('slash-commands', () => {
       await new Promise(r => setImmediate(r))
       expect(replyContent(reply)).toContain('✅ switched back to foo')
       expect(routing.get('c-1')?.workspace).toBe('foo')
+    })
+
+    it('updates bot custom status on /last (deltas §12)', async () => {
+      registerWorkspace('foo')
+      registerWorkspace('bar')
+      routing.set('c-1', 'foo', 1)
+      routing.set('c-1', 'bar', 2)
+      const { interaction } = makeChatInputInteraction({ commandName: 'last' })
+      dispatch(interaction)
+      await new Promise(r => setImmediate(r))
+      const setPresence = (gateway.client as unknown as { user: { setPresence: ReturnType<typeof vi.fn> } }).user.setPresence
+      const arg = setPresence.mock.calls[0]![0] as { activities: Array<{ name: string }> }
+      expect(arg.activities[0]!.name).toBe('foo')
     })
 
     it('rejects when previous workspace is offline', async () => {
