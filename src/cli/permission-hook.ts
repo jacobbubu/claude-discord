@@ -27,7 +27,11 @@ import { resolvePaths } from '../shared/paths.ts'
 import { encode, LineBuffer } from '../protocol/ndjson.ts'
 import { WireSchema } from '../protocol/schema.ts'
 import { PROTOCOL_VERSION } from '../protocol/version.ts'
-import { shouldConnectDaemon } from '../plugin/connect-policy.ts'
+import {
+  findClaudeAncestorCmdline,
+  shouldConnectDaemon,
+  sniffDangerouslySkipPermissions,
+} from '../plugin/connect-policy.ts'
 
 const TIMEOUT_MS = 60 * 60 * 1000 // 1h — match permission-relay TTL
 
@@ -49,6 +53,35 @@ function isHarmless(toolName: string): boolean {
   // Skip our plugin's own MCP tools — they have their own permission relay.
   if (toolName.startsWith('mcp__plugin_claude-discord_')) return true
   return false
+}
+
+/**
+ * Architecture deltas §22: read user-level settings.json `permissions.allow`
+ * and short-circuit hook if the tool already matches an entry. CC's hook is
+ * normally invoked BEFORE settings.allow check, so persisted "allow always"
+ * entries (§20) wouldn't take effect without this. Honoring them here makes
+ * §20 actually work end-to-end.
+ *
+ * Match rule: exact tool name, or `<tool_name>(<anything>)` prefix match
+ * (CC's pattern syntax for arg-restricted allows).
+ */
+export function settingsAllows(toolName: string, settingsPath?: string): boolean {
+  try {
+    const fs = require('node:fs') as typeof import('node:fs')
+    const path = settingsPath ?? `${process.env.HOME ?? ''}/.claude/settings.json`
+    if (!fs.existsSync(path)) return false
+    const data = JSON.parse(fs.readFileSync(path, 'utf8')) as {
+      permissions?: { allow?: string[] }
+    }
+    const rules = data.permissions?.allow ?? []
+    for (const r of rules) {
+      if (r === toolName) return true
+      if (r.startsWith(`${toolName}(`) && r.endsWith(')')) return true
+    }
+    return false
+  } catch {
+    return false
+  }
 }
 
 const MAX_DESC = 200
@@ -192,6 +225,16 @@ async function askDiscord(toolName: string, toolInput: unknown): Promise<'allow'
 }
 
 async function main(): Promise<void> {
+  // Architecture deltas §21: parent CC has --dangerously-skip-permissions
+  // → user explicitly opted out of all permission prompts. Don't bother
+  // asking Discord — emit 'allow' immediately. This wins over §16
+  // channel-mode routing because the flag is a stronger signal of intent.
+  const cmdline = findClaudeAncestorCmdline()
+  if (sniffDangerouslySkipPermissions(cmdline)) {
+    emitDecision('allow', 'permission-hook: parent has --dangerously-skip-permissions')
+    return
+  }
+
   // Architecture deltas §16: only intercept when parent CC is actually
   // running our plugin in channel-mode. Other Claude sessions (cmux, plain
   // console) get 'ask' so they fall back to their own permission UI —
@@ -215,6 +258,13 @@ async function main(): Promise<void> {
   const toolName = payload.tool_name ?? '<unknown>'
   if (isHarmless(toolName)) {
     emitDecision('allow')
+    return
+  }
+  // Architecture deltas §22: honor user's persisted permissions.allow rules
+  // (added e.g. by §20 "Allow always") so the same tool doesn't keep
+  // re-prompting after the user already approved it forever.
+  if (settingsAllows(toolName)) {
+    emitDecision('allow', `permission-hook: ${toolName} in settings.allow`)
     return
   }
 
