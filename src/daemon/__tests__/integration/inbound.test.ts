@@ -144,9 +144,11 @@ describe('inbound-router integration', () => {
     expect(sock.writes.length).toBe(0)
   })
 
-  it('guild channel without opt-in drops', async () => {
+  it('guild channel without opt-in drops (groupPolicy=opt-in)', async () => {
     const stateDir = mkdtempSync(join(tmpdir(), 'inb-'))
-    const env = buildEnv(stateDir, { allowFrom: ['u1'] })
+    // Default groupPolicy is 'open' (deltas §14); pin to 'opt-in' to test
+    // the legacy strict behavior where unknown channels are dropped.
+    const env = buildEnv(stateDir, { allowFrom: ['u1'], groupPolicy: 'opt-in' })
     const handler = makeInboundHandler(env)
 
     handler(
