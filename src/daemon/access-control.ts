@@ -33,6 +33,10 @@ export type GroupPolicy = z.infer<typeof GroupPolicySchema>
 
 export const AccessSchema = z.object({
   dmPolicy: z.enum(['pairing', 'allowlist', 'disabled']).default('pairing'),
+  // Architecture deltas §14: guild channels default to 'open' (any channel
+  // bot can read passes the opt-in gate). 'opt-in' restores prior behavior
+  // (channel must be in `groups`); 'disabled' drops all guild channels.
+  groupPolicy: z.enum(['open', 'opt-in', 'disabled']).default('open'),
   allowFrom: z.array(z.string()).default([]),
   groups: z.record(z.string(), GroupPolicySchema).default({}),
   pending: z.record(z.string(), PendingEntrySchema).default({}),
@@ -47,6 +51,7 @@ export type Access = z.infer<typeof AccessSchema>
 export function defaultAccess(): Access {
   return {
     dmPolicy: 'pairing',
+    groupPolicy: 'open',
     allowFrom: [],
     groups: {},
     pending: {},
@@ -77,8 +82,12 @@ export function readAccessFile(path: string): Access {
   }
 }
 
-export function writeAccessFile(path: string, a: Access): void {
-  atomicWrite(path, JSON.stringify(a, null, 2) + '\n', 0o600)
+export function writeAccessFile(path: string, a: Partial<Access>): void {
+  // Merge with defaults so callers can pass partial configs (e.g. test
+  // fixtures that don't care about every new field). Keeps on-disk shape
+  // consistent with what readAccessFile would parse from a minimal file.
+  const full = { ...defaultAccess(), ...a }
+  atomicWrite(path, JSON.stringify(full, null, 2) + '\n', 0o600)
 }
 
 export function pruneExpired(a: Access, now = Date.now()): boolean {
@@ -153,9 +162,18 @@ export function gate(a: Access, input: GateInput, now = Date.now()): GateResult 
     return { action: 'pair', code, isResend: false }
   }
 
-  // Guild channel: check opt-in by parent channel id
-  const policy = a.groups[input.guildChannelKey]
+  // Guild channel — check groupPolicy then per-channel override.
+  if (a.groupPolicy === 'disabled') return { action: 'drop' }
+
+  const explicit = a.groups[input.guildChannelKey]
+  // For 'open': unknown channels use safe defaults (require mention to keep
+  // a basic safety net on broad surfaces). User can override per-channel.
+  // For 'opt-in': unknown channels are dropped (legacy strict behavior).
+  const policy =
+    explicit ??
+    (a.groupPolicy === 'open' ? { requireMention: true, allowFrom: [] } : null)
   if (!policy) return { action: 'drop' }
+
   if (policy.allowFrom.length > 0 && !policy.allowFrom.includes(input.senderId)) {
     return { action: 'drop' }
   }

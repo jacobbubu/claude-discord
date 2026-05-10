@@ -1373,3 +1373,36 @@ no binding + ≥1 workspace 在线
 **测试影响：** controlled-e2e #3 / #5 / 09 / 10 等用例之前依赖 fallback 路由，现在需要 user 显式 `routing.set(...)` 后再 inject inbound。已逐个更新断言。
 
 跟踪 PR：bump 0.0.6 → 0.0.7。
+
+### 14. `groupPolicy` — guild channel 默认 open，不再强制 opt-in
+
+PRD §11 / Epic 5 把 guild channel 设计成"必须先 `claude-discord-bot group add <id>` opt-in 才能路由"。这是 spec 的双重 gate（Discord channel 权限 + access.json `groups`），假设 server admin 可能跟 bot operator 不是同一人。
+
+**stage 2 实测发现：**
+
+- 单用户场景（你 = server admin = bot operator = 终端持有人）：双重 gate 是冗余摩擦
+- 用户在新频道 @ bot 没反应 → 不知道为什么 → 翻文档发现要 `group add` → 多余步骤
+- Discord channel 权限本身就是 access boundary（user 显式邀请 bot 进 channel 才能看消息）
+
+**改动：access.json 新增 `groupPolicy` 字段**
+
+```jsonc
+{
+  "dmPolicy": "pairing|allowlist|disabled",
+  "groupPolicy": "open|opt-in|disabled"
+}
+```
+
+| `groupPolicy` | 行为 | 不在 `groups` 的 channel |
+|---|---|---|
+| `open` (新默认) | bot 看到的 guild channel 都路由 | 安全默认（`requireMention: true, allowFrom: []`） |
+| `opt-in` (legacy) | 必须显式 `group add` | drop |
+| `disabled` | 全部 guild 消息 drop | drop |
+
+`groups` 里显式条目继续起 per-channel override（可设 `requireMention: false` / `allowFrom: [...]`）。
+
+**对 spec 的关系：** 反转默认行为——spec 假设 opt-in 是默认，新默认 open 偏向单用户便利。多人 server 上需要严格的可改回 `opt-in`。`writeAccessFile` 同步改成 `Partial<Access>` 接口（fill 默认值），避免 callers 每次都得指定全部字段。
+
+**测试影响：** `inbound.test.ts` 的 "guild channel without opt-in drops" 测试现在固定 `groupPolicy: 'opt-in'` 验证 legacy 路径。default open 路径在其他用例覆盖。
+
+跟踪 PR：bump 0.0.7 → 0.0.8。
