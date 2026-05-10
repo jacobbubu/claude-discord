@@ -9,6 +9,7 @@
  */
 
 import {
+  ActivityType,
   ApplicationCommandOptionType,
   type AutocompleteInteraction,
   type ChatInputCommandInteraction,
@@ -190,6 +191,7 @@ async function handleUse(deps: SlashDeps, i: ChatInputCommandInteraction): Promi
   const channelId = i.channelId
   deps.routing.set(channelId, workspace, Date.now())
   await applyTopic(deps, channelId, workspace)
+  applyPresence(deps, workspace)
   await i.reply(`✅ switched to ${workspace}`)
 
   // Conditional auto-display of /recent context (FR-8.3)
@@ -219,6 +221,7 @@ async function handleLast(deps: SlashDeps, i: ChatInputCommandInteraction): Prom
   }
   deps.routing.set(channelId, prev, Date.now())
   await applyTopic(deps, channelId, prev)
+  applyPresence(deps, prev)
   await i.reply(`✅ switched back to ${prev}`)
 }
 
@@ -319,6 +322,27 @@ async function applyTopic(deps: SlashDeps, channelId: string, workspace: string)
   } catch (e) {
     // DM channels and partial channels can't have topics; ignore quietly
     log.debug(`applyTopic: ${e}`)
+  }
+}
+
+/**
+ * Reflect current routing in the bot's global Discord presence (custom status).
+ * DM has no channel-topic UI, so this is the only "always-visible" indicator
+ * across guilds/DMs of which workspace the bot is currently routed to.
+ *
+ * Architecture deltas §12. Single global activity — only the most recent
+ * `/use` / `/last` is reflected, intentionally.
+ */
+function applyPresence(deps: SlashDeps, workspace: string): void {
+  try {
+    deps.gateway.client.user?.setPresence({
+      activities: [
+        { name: workspace, type: ActivityType.Custom, state: workspace },
+      ],
+      status: 'online',
+    })
+  } catch (e) {
+    log.debug(`applyPresence: ${e}`)
   }
 }
 

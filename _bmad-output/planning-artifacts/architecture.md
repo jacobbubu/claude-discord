@@ -1324,3 +1324,25 @@ plugin 已经在 stderr 写了 `plugin: registered as workspace=<name>`（`src/p
 **对 spec 的关系：** Epic 6 工具集从 5 → 6。这是非破坏性扩展，新工具与既有 5 个独立。FR-6.1..6.5 不变；新 FR-6.6 待补（如果走主文档修订路线；当前用 deltas §11 兜底）。
 
 跟踪 PR：实施 + 加 unit test 验证（同样的"日内可被 mock 调用"模式）。
+
+### 12. Bot custom status — 全局可见的 active workspace 指示
+
+PRD §11 FR-7.2 提到 `/use` 切换时发"✅ switched to X"消息（inline 一次性），但消息很快被后续聊天推走，user 在多个 DM / channel 之间切换时**没办法常驻看到"当前 bot 路由到哪个 workspace"**。Discord DM 没有 channel topic 这种 UI 元素，所以 §4.2 / FR-7.1 的 "topic 写当前 workspace" 在 DM 路径下 silently no-op（`slash-commands.ts applyTopic` 检查 `ch instanceof TextChannel` 跳过 DMChannel）。
+
+**新增：每次 `/use` / `/last` 切换时，daemon 同时刷新 bot 的 Discord custom status (presence activity)**，让 bot 头像旁的 `Active: free-research-2` 全局可见——guild member 列表、DM 头像 hover 卡片都能看到。
+
+实施位置：
+
+- `src/daemon/slash-commands.ts handleUse / handleLast`：在 `applyTopic` 之后调用 `gateway.client.user?.setPresence({ activities: [{ name: <workspace>, type: ActivityType.Custom, state: <workspace> }], status: 'online' })`
+- 不在 daemon startup 设置初始值——保持 default `online` 让 user 知道 bot 活着，没绑定就没 activity 文字
+- guild channel + DM 路径都触发（applyTopic 的 DM no-op 不影响 setPresence）
+
+**已知 trade-off：**
+
+- presence 是全局而非 per-channel/DM —— 一个 bot 只能展示一个 activity 文字
+- 多 channel 绑不同 workspace 时，custom status 只反映**最后一次 `/use` 的那个**——足够给 user 一个"我现在主路由到哪儿"的提示，但不是完美的 per-DM 指示
+- 不替代 #11 `whoami`（per-plugin 可查询）；两者互补：custom status 给 user 看眼一瞥，whoami 给 Claude / 用户精确询问
+
+**对 spec 的关系：** FR-7.2 "✅ switched to X" 消息保留不变；新增 presence 同步是 UX 增强，**不修改既有验收标准**，纯加项。
+
+跟踪 PR：mock `client.user.setPresence` 验证调用参数；bump 0.0.5 → 0.0.6。
