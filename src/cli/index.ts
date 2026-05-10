@@ -23,6 +23,7 @@ import {
 import { configure } from './configure.ts'
 import { dev } from './dev.ts'
 import { install } from './install.ts'
+import { installHook, uninstallHook } from './install-hook.ts'
 import { logs } from './logs.ts'
 import { reset } from './reset.ts'
 import { restart } from './restart.ts'
@@ -129,6 +130,16 @@ program
   .command('uninstall')
   .description('reverse of install (idempotent)')
   .action(() => uninstall())
+
+program
+  .command('install-hook')
+  .description('register PreToolUse hook in ~/.claude/settings.json so CC permission requests route to Discord (deltas §15)')
+  .action(() => installHook())
+
+program
+  .command('uninstall-hook')
+  .description('remove the PreToolUse hook from ~/.claude/settings.json')
+  .action(() => uninstallHook())
 
 program
   .command('status')
