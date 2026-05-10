@@ -95,24 +95,26 @@ async function handle(deps: InboundRouterDeps, msg: Message): Promise<void> {
 
   // deliver — find target workspace
   const route = deps.routing.get(msg.channelId)
-  let workspace = route?.workspace ?? null
+  const workspace = route?.workspace ?? null
 
   if (!workspace) {
-    // Slice 3 fallback: pick most-recently-registered active workspace.
-    // EC-3 (docs/reviews/code-review-mvp.md): emit a warn so unbound DMs
-    // don't silently route to whichever workspace happened to register
-    // last — observable in daemon logs for ops debugging.
+    // Architecture deltas §13: removed silent fallback to most-recent
+    // workspace. Pre-#45 console-only CCs polluted the registry, so
+    // fallback often hit the wrong CC. Now explicit binding required —
+    // user must `/use` first, or the daemon prompts them with a hint.
     const live = deps.registry.list()
-    workspace = live.length > 0 ? live[live.length - 1]!.workspace : null
-    if (workspace) {
-      log.warn(
-        `inbound fallback: channel ${msg.channelId} has no /use binding — routing to most-recent workspace '${workspace}'. Run \`/use <workspace>\` to bind explicitly.`,
+    if (live.length === 0) {
+      await deps.gateway.send(
+        msg.channelId,
+        'no workspace online — start one with `claude --channels plugin:claude-discord@<marketplace>` from a project directory',
+      )
+    } else {
+      const names = live.map(c => c.workspace).filter(Boolean).slice(0, 5).join(', ')
+      await deps.gateway.send(
+        msg.channelId,
+        `this channel has no workspace bound. run \`/use <workspace>\` to bind. active workspaces: ${names}${live.length > 5 ? ', ...' : ''}`,
       )
     }
-  }
-
-  if (!workspace) {
-    await deps.gateway.send(msg.channelId, 'no workspace online — start one with `claude --channels plugin:claude-discord` from a project directory')
     return
   }
 
