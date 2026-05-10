@@ -13,7 +13,12 @@ import {
   type Access,
 } from '../access-control.ts'
 import { Connection } from '../connection.ts'
-import { PERMISSION_TEXT_RE, PermissionRelay, makeRequestId } from '../permission-relay.ts'
+import {
+  PERMISSION_TEXT_RE,
+  PermissionRelay,
+  makeRequestId,
+  persistAllowRule,
+} from '../permission-relay.ts'
 import { WorkspaceRegistry } from '../registry.ts'
 import type { Paths } from '../../shared/paths.ts'
 import { resolvePaths } from '../../shared/paths.ts'
@@ -667,5 +672,57 @@ describe('PermissionRelay.handleCcRequest §16 source-bound routing', () => {
     expect(channelSends.length).toBe(0)
     expect(dms.length).toBe(1)
     relay.stop()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// §20: "Allow always" — persist tool to settings.json + dispatch allow
+// ---------------------------------------------------------------------------
+
+import { readFileSync, writeFileSync } from 'node:fs'
+
+describe('persistAllowRule (§20)', () => {
+  it('writes a new permissions.allow array to empty settings.json', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'pr-allow-')), 'settings.json')
+    writeFileSync(path, JSON.stringify({ otherKey: 'preserve me' }))
+    const ok = persistAllowRule('Bash', path)
+    expect(ok).toBe(true)
+    const after = JSON.parse(readFileSync(path, 'utf8'))
+    expect(after.permissions.allow).toEqual(['Bash'])
+    expect(after.otherKey).toBe('preserve me') // doesn't clobber other fields
+  })
+
+  it('appends to existing permissions.allow', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'pr-allow-')), 'settings.json')
+    writeFileSync(
+      path,
+      JSON.stringify({ permissions: { allow: ['Read', 'Glob'] } }),
+    )
+    persistAllowRule('Bash', path)
+    const after = JSON.parse(readFileSync(path, 'utf8'))
+    expect(after.permissions.allow).toEqual(['Read', 'Glob', 'Bash'])
+  })
+
+  it('idempotent — re-add same tool does not duplicate', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'pr-allow-')), 'settings.json')
+    writeFileSync(path, JSON.stringify({ permissions: { allow: ['Bash'] } }))
+    persistAllowRule('Bash', path)
+    const after = JSON.parse(readFileSync(path, 'utf8'))
+    expect(after.permissions.allow).toEqual(['Bash'])
+  })
+
+  it('creates settings.json when file does not exist', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'pr-allow-')), 'settings.json')
+    const ok = persistAllowRule('Bash', path)
+    expect(ok).toBe(true)
+    const after = JSON.parse(readFileSync(path, 'utf8'))
+    expect(after.permissions.allow).toEqual(['Bash'])
+  })
+
+  it('returns false on parse error (corrupted settings.json)', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'pr-allow-')), 'settings.json')
+    writeFileSync(path, 'not valid json {{{')
+    const ok = persistAllowRule('Bash', path)
+    expect(ok).toBe(false)
   })
 })

@@ -1543,3 +1543,37 @@ bump 0.0.10 → 0.0.11。
 **对 spec 的关系：** §14 引入 `groupPolicy`，§17 是 §14 的细化扩展，不是反转。FR-7 系列不动。
 
 bump 0.0.11 → 0.0.12。
+
+### 18. Hook 探测 claude ancestor 而不是 immediate ppid（§16 fix）
+
+§16 hook 用 `process.ppid + ps` 探测 parent 是否 channel-mode。但实测发现 spawn 链是 `CC → bash -c "bun run permission-hook.ts" → bun → permission-hook.ts`，`process.ppid` 拿到的是 bash/bun，不是 CC。结果 hook 当成"探测失败 → 保守 connect" → 卷入 cmux this Claude（不带 `--channels`）。
+
+**修：** 新加 `findClaudeAncestorCmdline()` 递归 walk parent process chain，最多 8 层，找到第一个 cmd basename === `claude` 的进程。plugin 路径不受影响（CC 直接 spawn plugin 第 1 层就找到）；hook 路径终于能找到真正的 CC。
+
+bump 0.0.13 → 0.0.14。
+
+### 19. （讨论中，未实施）`lastInboundChatId` TTL + cc TUI fallback
+
+**待讨论。** 见 commit history / chat。
+
+### 20. "Allow always" 按钮 — 写 tool 到 settings.json
+
+§15 + §16 实施后，channel mode 每个 Bash / Edit / Write 调用都要 user 点 "Allow"，重复操作烦。CC 自家 TUI 弹窗有"Yes, and don't ask again for ... in `<cwd>`" 选项写 settings.json `permissions.allow` 后续不再问。我们 button row 缺这个，导致同样的工具反复触发权限请求。
+
+**实施：**
+
+- permission-relay.ts handleRequest button row 加 "Allow always" 按钮 (customId `perm:always:<rid>`)
+- handleButton 加 'always' 分支：
+  - 仍然 claim pending 走 atomic（防 race）
+  - dispatch `allow` 给 hook（这次允许）
+  - **同时**把 `tool_name` 写进 `~/.claude/settings.json` 的 `permissions.allow`（idempotent）
+  - update message 标 "✅ Allowed always"
+- 之后 CC 遇到该 tool → settings allow rule 优先于 hook → 自动 pass，hook 不再 spawn
+
+**权限粒度：** 简版只写 `<tool_name>`（如 `Bash`）—— 整个工具名所有调用都通过。后续可加细粒度（`Bash(git *)`）作为 stretch（`§20.1`）。
+
+**安全：** 仅 `allowFrom` 用户能点（已有的 button auth 检查）；user 等于在自家终端勾"don't ask again"，等价。
+
+**对 spec 的关系：** Epic 5 / FR-5 的 plugin 权限 Q&A 协议不动；本扩展只丰富 CC 内置 tool（hook 触发的）那条路径的 button row。
+
+bump 0.0.14 → 0.0.15。
