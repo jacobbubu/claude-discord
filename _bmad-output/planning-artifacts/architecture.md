@@ -1406,3 +1406,55 @@ PRD §11 / Epic 5 把 guild channel 设计成"必须先 `claude-discord-bot grou
 **测试影响：** `inbound.test.ts` 的 "guild channel without opt-in drops" 测试现在固定 `groupPolicy: 'opt-in'` 验证 legacy 路径。default open 路径在其他用例覆盖。
 
 跟踪 PR：bump 0.0.7 → 0.0.8。
+
+### 15. CC 内置工具的权限请求重定向到 Discord（`PermissionRequest` hook）
+
+PRD §11 Epic 5 设计了 plugin tool 权限的 Q&A 通道（`permission_request` NDJSON + button DM + `yes XXXXX` 文字回退）。但**CC 的内置工具**（Read / Bash / Glob / Edit / Write / Grep 等）权限不走这条 plugin 路径——CC 自己的 tool gate 在 TUI 弹"Do you want to proceed?"，user 在 Discord 端看不到、没法选。
+
+实测痛点：channel-mode CC 收到 Discord 用户发的图片 → 调 `download_attachment`（已 allow）→ 然后调 `Read`（CC 内置）查看文件内容 → CC TUI 弹权限请求，Discord 那头沉默。整个"Discord 自动响应"链路被打破。
+
+**CC 已有 hook 机制**：`~/.claude/settings.json` 的 `hooks.PermissionRequest` 可以挂一个外部命令——CC 触发权限请求时把请求 JSON 通过 stdin 喂给该命令，命令负责"询问用户 + 返回结果"。退出码 0 = allow / 1 = deny / 2 = timeout 或类似（具体 schema 走 CC 协议）。
+
+cmux 已经在用这个 hook（user 当前 settings.json 里能看到）转给 cmux 自家 UI。我们可以在 CC settings 上**并列**挂一个 hook 转给 daemon，让权限请求 fan-out 到 Discord DM。
+
+**设计：**
+
+```
+CC 调内置 tool（Read / Bash / ...）
+  ↓
+CC PermissionRequest hook 触发，spawn `claude-discord-permission-hook`
+  ↓ stdin: { tool_name, tool_args, ... }
+hook 进程连 daemon socket
+  ↓ NDJSON: { type: "cc_permission_request", request_id, tool_name, ... }
+daemon permission-relay 复用现有 flow（button DM + claim + TTL）
+  ↓
+user 点 Allow/Deny in Discord
+  ↓ NDJSON: { type: "permission", request_id, behavior }
+daemon 回 hook（同 socket 双工）
+  ↓
+hook process.exit(behavior === 'allow' ? 0 : 1)
+  ↓
+CC 收到退出码 → 继续 / 拒绝 tool 调用
+```
+
+**实施单元：**
+
+1. **新可执行：** `src/cli/permission-hook.ts`（CLI bin entry，shebang `#!/usr/bin/env bun`）。读 stdin → 连 daemon → 等回复 → 退出码。可被 spawn 而非 require'd。
+2. **协议扩展：** `src/protocol/schema.ts` 加 `CcPermissionRequestSchema`（区分 plugin permission_request；多一个 source 字段标 "cc-builtin" vs "plugin"）。
+3. **daemon 复用 permission-relay：** `permission-relay.ts handleCcPermissionRequest`，DM 文本前缀加 "🔐 CC tool: " 区分。share button + claim + dispatchToHook 逻辑（dispatchToPlugin 改名 dispatchToTarget）。
+4. **CLI install-hook：** `bun run src/cli/index.ts install-hook` 子命令——把 hook 配置写进 `~/.claude/settings.json`，幂等（已存在不重复加）。也提供 `uninstall-hook`。
+5. **测试：** unit 测 hook stdin/stdout 协议；integration 测 CC permission flow → daemon → mock Discord button → hook exit code。
+
+**Trade-off：**
+
+- 跟 cmux PermissionRequest hook **并存**：CC 会**串行**调用两个 hook（按 settings.json 顺序）。串行 = 用户在 cmux 端 Allow 后我们 hook 才执行；用户体验是先 cmux 弹再 Discord 弹（双重弹窗）。**必须文档化** + 提供"独占模式"开关：
+  - `--disable-cmux-hook`（写 settings.json 时把 cmux 那条注释或临时移除）
+  - 或推荐 user 手动选一个
+- hook 进程 spawn 开销：每次 CC 内置 tool 都启一个 bun 子进程（~50-100ms cold-start）。批量调 Read 时累积。**优化候选**：hook 进程改成长寿命 daemon-side bridge，CC 启动后预热（day-2）
+- timeout 处理：daemon TTL 过期 → hook 怎么知道？需 socket-level timeout（hook 等不超过 N 秒）+ 默认 deny
+
+**对 spec 的关系：** Epic 5 当前只覆盖 plugin tool 权限。新增"CC 内置 tool 权限路由"是扩展，主文档不动；deltas §15 收口。
+
+跟踪 PR：分两步——
+- **PR a (spec only)**：本提交，添加 §15 spec
+- **PR b (implementation)**：随后实施。bump 0.0.8 → 0.0.9。
