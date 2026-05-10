@@ -524,3 +524,148 @@ describe('PermissionRelay.handleCcRequest', () => {
     relay.stop()
   })
 })
+
+// ---------------------------------------------------------------------------
+// §16: source-bound routing — when hook supplies cwd and a registered
+// workspace has matching cwd + lastInboundChatId, the button DM goes to
+// that chat (not fan-out DM).
+// ---------------------------------------------------------------------------
+
+function setupRelayWithChannelFetch(): {
+  relay: PermissionRelay
+  registry: WorkspaceRegistry
+  channelSends: Array<{ chatId: string; content: string; components: unknown[] }>
+  dms: DmSend[]
+} {
+  const stateDir = mkdtempSync(join(tmpdir(), 'pr-deltas16-'))
+  mkdirSync(join(stateDir, 'inbox'), { recursive: true })
+  mkdirSync(join(stateDir, 'approved'), { recursive: true })
+  const paths = resolvePaths({ CLAUDE_DISCORD_STATE_DIR: stateDir } as NodeJS.ProcessEnv)
+  writeAccessFile(paths.accessFile, { ...defaultAccess(), allowFrom: ['u1'] })
+
+  const registry = new WorkspaceRegistry()
+  const channelSends: Array<{ chatId: string; content: string; components: unknown[] }> = []
+  const dms: DmSend[] = []
+  const gateway = makeMockGateway()
+
+  ;(gateway.client as unknown as {
+    channels: { fetch: (id: string) => Promise<unknown> }
+  }).channels = {
+    fetch: async (chatId: string) => ({
+      send: async (opts: { content: string; components: unknown[] }) => {
+        channelSends.push({ chatId, content: opts.content, components: opts.components })
+        return { id: `m-${channelSends.length}` }
+      },
+    }),
+  }
+  ;(gateway.client as unknown as {
+    users: { fetch: (id: string) => Promise<unknown> }
+  }).users = {
+    fetch: async (userId: string) => ({
+      id: userId,
+      send: async (opts: DmSend) => {
+        dms.push(opts)
+        return { id: `dm-${dms.length}` }
+      },
+    }),
+  }
+
+  const relay = new PermissionRelay(gateway, registry, paths)
+  return { relay, registry, channelSends, dms }
+}
+
+describe('PermissionRelay.handleCcRequest §16 source-bound routing', () => {
+  it('routes button to lastInboundChatId when cwd matches', async () => {
+    const { relay, registry, channelSends, dms } = setupRelayWithChannelFetch()
+    const sock = new FakeSocket()
+    const conn = new Connection(sock as never)
+    conn.workspace = 'free-research'
+    conn.cwd = '/Users/x/free-research'
+    conn.lastInboundChatId = 'cg-foo'
+    conn.state = 'registered'
+    registry.register('free-research', conn)
+
+    const hookSock = new FakeSocket()
+    const hookConn = new Connection(hookSock as never)
+    await relay.handleCcRequest(hookConn, {
+      type: 'cc_permission_request',
+      v: 1,
+      request_id: 'abcde',
+      tool_name: 'Bash',
+      description: 'run ls',
+      input_preview: '{"command":"ls"}',
+      cwd: '/Users/x/free-research',
+    })
+
+    expect(channelSends.length).toBe(1)
+    expect(channelSends[0]!.chatId).toBe('cg-foo')
+    expect(channelSends[0]!.content).toContain('🔐 CC tool: Bash')
+    expect(dms.length).toBe(0)
+    relay.stop()
+  })
+
+  it('falls back to fan-out DM when cwd does not match any conn', async () => {
+    const { relay, channelSends, dms } = setupRelayWithChannelFetch()
+
+    const hookSock = new FakeSocket()
+    const hookConn = new Connection(hookSock as never)
+    await relay.handleCcRequest(hookConn, {
+      type: 'cc_permission_request',
+      v: 1,
+      request_id: 'mnopq',
+      tool_name: 'Read',
+      description: '/tmp/x',
+      input_preview: '{}',
+      cwd: '/no/such/cwd',
+    })
+
+    expect(channelSends.length).toBe(0)
+    expect(dms.length).toBe(1)
+    relay.stop()
+  })
+
+  it('falls back to fan-out DM when conn matches but lastInboundChatId unset', async () => {
+    const { relay, registry, channelSends, dms } = setupRelayWithChannelFetch()
+    const sock = new FakeSocket()
+    const conn = new Connection(sock as never)
+    conn.workspace = 'free-research'
+    conn.cwd = '/Users/x/free-research'
+    conn.state = 'registered'
+    registry.register('free-research', conn)
+
+    const hookSock = new FakeSocket()
+    const hookConn = new Connection(hookSock as never)
+    await relay.handleCcRequest(hookConn, {
+      type: 'cc_permission_request',
+      v: 1,
+      request_id: 'wxyzy',
+      tool_name: 'Bash',
+      description: 'd',
+      input_preview: '{}',
+      cwd: '/Users/x/free-research',
+    })
+
+    expect(channelSends.length).toBe(0)
+    expect(dms.length).toBe(1)
+    relay.stop()
+  })
+
+  it('falls back to fan-out DM when cwd is missing from msg', async () => {
+    const { relay, channelSends, dms } = setupRelayWithChannelFetch()
+
+    const hookSock = new FakeSocket()
+    const hookConn = new Connection(hookSock as never)
+    await relay.handleCcRequest(hookConn, {
+      type: 'cc_permission_request',
+      v: 1,
+      request_id: 'qrstu',
+      tool_name: 'Bash',
+      description: 'd',
+      input_preview: '{}',
+    })
+
+    expect(channelSends.length).toBe(0)
+    expect(dms.length).toBe(1)
+    relay.stop()
+  })
+})

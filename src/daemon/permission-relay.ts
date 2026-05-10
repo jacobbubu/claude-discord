@@ -119,6 +119,18 @@ export class PermissionRelay {
    * writes the `permission` reply back on it. Hook then exits.
    */
   async handleCcRequest(conn: Connection, msg: CcPermissionRequestMsg): Promise<void> {
+    // Architecture deltas §16: route the button DM to the prompt's source
+    // chat instead of fan-out. Use the cwd to find the matching workspace
+    // conn, then read its lastInboundChatId (set by inbound-router).
+    let sourceChatId: string | null = null
+    if (msg.cwd) {
+      for (const c of this.registry.list()) {
+        if (c.cwd === msg.cwd && c.lastInboundChatId) {
+          sourceChatId = c.lastInboundChatId
+          break
+        }
+      }
+    }
     return this.handleRequest(
       { kind: 'hook', conn },
       'cc-builtin',
@@ -126,6 +138,7 @@ export class PermissionRelay {
       msg.tool_name,
       msg.description,
       msg.input_preview,
+      sourceChatId,
     )
   }
 
@@ -140,6 +153,7 @@ export class PermissionRelay {
     tool_name: string,
     description: string,
     input_preview: string,
+    sourceChatId: string | null = null,
   ): Promise<void> {
     const access = readAccessFile(this.paths.accessFile)
     if (access.allowFrom.length === 0) {
@@ -183,13 +197,35 @@ export class PermissionRelay {
         .setStyle(ButtonStyle.Danger),
     )
 
-    for (const userId of access.allowFrom) {
+    // Architecture deltas §16: prefer sending the button to the prompt's
+    // source chat (channel or DM where the inbound came from). Fall back
+    // to fan-out DM to allowFrom users if source-chat send fails or no
+    // sourceChatId is known (plugin path or cwd-not-matched hook path).
+    let sourceChatSucceeded = false
+    if (sourceChatId) {
       try {
-        const user = await this.gateway.client.users.fetch(userId)
-        const sent = await user.send({ content: text, components: [row] })
-        entry.messageRefs.push({ userId, messageId: sent.id })
+        const ch = await this.gateway.client.channels.fetch(sourceChatId)
+        if (ch && 'send' in ch && typeof (ch as { send?: unknown }).send === 'function') {
+          const sent = await (
+            ch as { send: (o: { content: string; components: unknown[] }) => Promise<{ id: string }> }
+          ).send({ content: text, components: [row] })
+          entry.messageRefs.push({ userId: '<source-chat>', messageId: sent.id })
+          sourceChatSucceeded = true
+        }
       } catch (e) {
-        log.warn(`permission DM to ${userId} failed: ${e}`)
+        log.warn(`permission ${request_id}: source chat ${sourceChatId} send failed: ${e}; falling back to DM`)
+      }
+    }
+
+    if (!sourceChatSucceeded) {
+      for (const userId of access.allowFrom) {
+        try {
+          const user = await this.gateway.client.users.fetch(userId)
+          const sent = await user.send({ content: text, components: [row] })
+          entry.messageRefs.push({ userId, messageId: sent.id })
+        } catch (e) {
+          log.warn(`permission DM to ${userId} failed: ${e}`)
+        }
       }
     }
 
