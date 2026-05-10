@@ -131,6 +131,70 @@ describe('access-control', () => {
       expect(gate(a, baseGuild({ senderId: 'u1' })).action).toBe('deliver')
       expect(gate(a, baseGuild({ senderId: 'u2' })).action).toBe('drop')
     })
+
+    describe('groupPolicyDefaults (§17)', () => {
+      it('unknown channel uses defaults when groupPolicy=open', () => {
+        const a: Access = {
+          ...defaultAccess(),
+          groupPolicy: 'open',
+          groupPolicyDefaults: { requireMention: false, allowFrom: [] },
+        }
+        // No mention, no group entry, but defaults say mention not required
+        expect(gate(a, baseGuild({ isMentioned: false })).action).toBe('deliver')
+      })
+
+      it('unknown channel falls back to safe default when defaults unset', () => {
+        const a: Access = {
+          ...defaultAccess(),
+          groupPolicy: 'open',
+        }
+        // Safe fallback requireMention=true
+        expect(gate(a, baseGuild({ isMentioned: false })).action).toBe('drop')
+        expect(gate(a, baseGuild({ isMentioned: true })).action).toBe('deliver')
+      })
+
+      it('explicit per-channel entry overrides defaults', () => {
+        const a: Access = {
+          ...defaultAccess(),
+          groupPolicy: 'open',
+          groupPolicyDefaults: { requireMention: false, allowFrom: [] },
+          // explicit cg1: require mention
+          groups: { cg1: { requireMention: true, allowFrom: [] } },
+        }
+        expect(gate(a, baseGuild({ isMentioned: false })).action).toBe('drop')
+        expect(gate(a, baseGuild({ isMentioned: true })).action).toBe('deliver')
+      })
+
+      it('groupPolicy=opt-in IGNORES defaults (legacy strict)', () => {
+        const a: Access = {
+          ...defaultAccess(),
+          groupPolicy: 'opt-in',
+          groupPolicyDefaults: { requireMention: false, allowFrom: [] },
+        }
+        // Even with defaults set, opt-in mode rejects unknown channel
+        expect(gate(a, baseGuild({ isMentioned: false })).action).toBe('drop')
+        expect(gate(a, baseGuild({ isMentioned: true })).action).toBe('drop')
+      })
+
+      it('groupPolicy=disabled IGNORES defaults', () => {
+        const a: Access = {
+          ...defaultAccess(),
+          groupPolicy: 'disabled',
+          groupPolicyDefaults: { requireMention: false, allowFrom: [] },
+        }
+        expect(gate(a, baseGuild({ isMentioned: true })).action).toBe('drop')
+      })
+
+      it('defaults respect allowFrom filter on unknown channel', () => {
+        const a: Access = {
+          ...defaultAccess(),
+          groupPolicy: 'open',
+          groupPolicyDefaults: { requireMention: false, allowFrom: ['u1'] },
+        }
+        expect(gate(a, baseGuild({ senderId: 'u1' })).action).toBe('deliver')
+        expect(gate(a, baseGuild({ senderId: 'u-other' })).action).toBe('drop')
+      })
+    })
   })
 
   describe('mention pattern matching', () => {
