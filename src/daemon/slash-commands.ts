@@ -192,7 +192,7 @@ async function handleUse(deps: SlashDeps, i: ChatInputCommandInteraction): Promi
   deps.routing.set(channelId, workspace, Date.now())
   await applyTopic(deps, channelId, workspace)
   applyPresence(deps, workspace)
-  await i.reply(`✅ switched to ${workspace}`)
+  await i.reply(`✅ switched to ${workspace}${formatWorkspaceHealth(deps, workspace)}`)
 
   // Conditional auto-display of /recent context (FR-8.3)
   const buf = deps.ringBuffers.get(workspace)
@@ -222,7 +222,21 @@ async function handleLast(deps: SlashDeps, i: ChatInputCommandInteraction): Prom
   deps.routing.set(channelId, prev, Date.now())
   await applyTopic(deps, channelId, prev)
   applyPresence(deps, prev)
-  await i.reply(`✅ switched back to ${prev}`)
+  await i.reply(`✅ switched back to ${prev}${formatWorkspaceHealth(deps, prev)}`)
+}
+
+/**
+ * Render a short "(pid N, last active <t:...:R>)" suffix for the target
+ * workspace, so the user can confirm at a glance that it's actually alive.
+ * Returns empty string if the conn is somehow gone (race between has() and
+ * get()), keeping the main reply readable.
+ */
+export function formatWorkspaceHealth(deps: SlashDeps, workspace: string): string {
+  const conn = deps.registry.get(workspace)
+  if (!conn) return ''
+  const ts = Math.floor(conn.lastActivityTs / 1000)
+  const pidPart = conn.pid != null ? `pid ${conn.pid}, ` : ''
+  return ` (${pidPart}last active <t:${ts}:R>)`
 }
 
 async function handleList(deps: SlashDeps, i: ChatInputCommandInteraction): Promise<void> {

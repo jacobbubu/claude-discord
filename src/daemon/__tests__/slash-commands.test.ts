@@ -222,6 +222,39 @@ describe('slash-commands', () => {
       expect(arg.activities[0]!.name).toBe('foo')
       expect(arg.status).toBe('online')
     })
+
+    it('reply includes target workspace pid + last-active timestamp (#67)', async () => {
+      const conn = registerWorkspace('foo')
+      conn.pid = 12345
+      conn.lastActivityTs = 1700000000_000 // arbitrary fixed ts → unix seconds 1700000000
+      const { interaction, reply } = makeChatInputInteraction({
+        commandName: 'use',
+        channelId: 'c-1',
+        string: { workspace: 'foo' },
+      })
+      dispatch(interaction)
+      await new Promise(r => setImmediate(r))
+      const content = replyContent(reply)
+      expect(content).toContain('✅ switched to foo')
+      expect(content).toContain('pid 12345')
+      expect(content).toContain('<t:1700000000:R>')
+    })
+
+    it('omits pid when register didn\'t carry one (forward-compat with older plugins)', async () => {
+      const conn = registerWorkspace('foo')
+      conn.pid = null
+      conn.lastActivityTs = 1700000000_000
+      const { interaction, reply } = makeChatInputInteraction({
+        commandName: 'use',
+        channelId: 'c-1',
+        string: { workspace: 'foo' },
+      })
+      dispatch(interaction)
+      await new Promise(r => setImmediate(r))
+      const content = replyContent(reply)
+      expect(content).not.toContain('pid')
+      expect(content).toContain('<t:1700000000:R>')
+    })
   })
 
   describe('/which', () => {
