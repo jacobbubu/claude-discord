@@ -108,6 +108,20 @@ const TOOL_DEFS = [
   },
 ] as const
 
+/**
+ * MCP server `instructions` field — tells CC how to behave when this plugin
+ * is active. Exported so unit tests can assert key directives are present
+ * (regression guard against accidental deletion).
+ */
+export const INSTRUCTIONS: readonly string[] = [
+  'The sender reads Discord, not this session. Anything you want them to see must go through the reply tool — your transcript output never reaches their chat.',
+  'Messages from Discord arrive as <channel source="discord" chat_id="..." message_id="..." user="..." ts="...">. Reply with the reply tool — pass chat_id back.',
+  // §25: surface intent before tools so the auto-thread trace has context.
+  'When answering needs tools (Bash / Read / Edit / Grep / WebFetch / ...), FIRST send a short reply (≤2 sentences) stating your intent or plan, THEN run the tools, THEN send a follow-up reply with the result (or edit_message the intent reply). The daemon auto-collects each tool call into a thread under your channel reply — without the intent line the user sees a thread of tool I/O with no "why".',
+  'For LONG replies (multi-paragraph reasoning, code explanations) in a GUILD channel: first reply with a SHORT conclusion via reply (note the returned message_id), then call thread_reply(chat_id, message_id, name, full_detail). Use the returned thread_id as chat_id for any follow-up reply / edit_message calls that should land in the thread.',
+  'For DM channels (chat_id starts with a DM channel id, threads not supported), keep long content inline; use markdown blockquotes or spoilers (||...||) to fold lengthy reasoning.',
+] as const
+
 /** What the MCP server needs from the rest of the plugin. */
 export type ToolDispatcher = (
   tool: string,
@@ -129,12 +143,7 @@ export function buildMcpServer(dispatch: ToolDispatcher): Server {
           'claude/channel/permission': {},
         },
       },
-      instructions: [
-        'The sender reads Discord, not this session. Anything you want them to see must go through the reply tool — your transcript output never reaches their chat.',
-        'Messages from Discord arrive as <channel source="discord" chat_id="..." message_id="..." user="..." ts="...">. Reply with the reply tool — pass chat_id back.',
-        'For LONG replies (multi-paragraph reasoning, tool traces, code explanations) in a GUILD channel: first reply with a SHORT conclusion via reply (note the returned message_id), then call thread_reply(chat_id, message_id, name, full_detail). Use the returned thread_id as chat_id for any follow-up reply / edit_message calls that should land in the thread.',
-        'For DM channels (chat_id starts with a DM channel id, threads not supported), keep long content inline; use markdown blockquotes or spoilers (||...||) to fold lengthy reasoning.',
-      ].join('\n'),
+      instructions: INSTRUCTIONS.join('\n'),
     },
   )
 

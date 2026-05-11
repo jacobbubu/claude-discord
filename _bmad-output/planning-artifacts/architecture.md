@@ -1724,3 +1724,21 @@ footer: ts
 - hook 阻塞 CC：fire-and-forget；写 daemon 超时 200ms 后直接 return，绝不卡住 user 的 tool 执行。
 
 bump 0.0.17 → 0.0.18。
+
+### 25. Instructions 强化：tool 调用前先说意图，补 thinking 缺口
+
+§24 把 tool 调用自动转发到 thread，但 CC hook 不暴露 thinking，user 看不到 CC "为什么这么做"。完整 thinking 转发要走 SDK 程序化模式（重，破坏 TUI 交互），先走轻量路径：**强化 mcp-server.ts instructions，让 CC 在工具调用前主动写 1-2 句意图**。
+
+**新增指令（mcp-server.ts INSTRUCTIONS）：**
+
+> When answering needs tools (Bash / Read / Edit / Grep / WebFetch / ...), FIRST send a short reply (≤2 sentences) stating your intent or plan, THEN run the tools, THEN send a follow-up reply with the result (or edit_message the intent reply). The daemon auto-collects each tool call into a thread under your channel reply — without the intent line the user sees a thread of tool I/O with no "why".
+
+**实施细节：**
+
+- 把 instructions 数组抽成顶层 `export const INSTRUCTIONS` —— 便于单测断言关键指令存在
+- 不影响代码路径，纯模型 prompting 改动
+- 覆盖率取决于模型自觉，估计 60-80%
+
+**测试：** 新增 `src/plugin/__tests__/mcp-server.test.ts` regression guard，断言每条指令的关键词存在（避免后续误删）。
+
+bump 0.0.18 → 0.0.19。
