@@ -99,19 +99,28 @@ export function buildCommandList() {
   ].map(c => c.toJSON())
 }
 
-export async function registerSlashCommands(client: Client, token: string): Promise<void> {
+export async function registerSlashCommands(
+  client: Client,
+  token: string,
+  rest: Pick<REST, 'put'> = new REST({ version: '10' }).setToken(token),
+): Promise<void> {
   const appId = client.application?.id
   if (!appId) {
     log.warn('slash: client.application.id unavailable; skipping registration')
     return
   }
-  const rest = new REST({ version: '10' }).setToken(token)
   const commands = buildCommandList()
 
-  // Global registration — required for commands to appear in bot DMs (the
-  // contexts list includes BotDM/PrivateChannel). Discord propagates global
-  // commands lazily (~1 hour to all clients), so we ALSO register per-guild
-  // below for instant availability in guild text channels.
+  // We register GLOBALLY only. Global commands work in bot DMs (the contexts
+  // list includes BotDM/PrivateChannel) and in every guild. Discord
+  // propagates them lazily (~1h on first install / command change), then
+  // they're instant.
+  //
+  // We deliberately do NOT register per-guild: Discord shows global AND guild
+  // commands side by side in a guild's autocomplete (no dedupe by name), so a
+  // bot that registers both ends up with every command listed twice (#71).
+  // Instead we PUT an empty array per guild to purge any stale per-guild
+  // commands left over from older daemon versions.
   try {
     await rest.put(Routes.applicationCommands(appId), { body: commands })
     log.info(`slash: registered ${commands.length} commands globally (DM-eligible; ~1h propagation)`)
@@ -119,13 +128,12 @@ export async function registerSlashCommands(client: Client, token: string): Prom
     log.warn(`slash: global register failed: ${e}`)
   }
 
-  // Per-guild registration for instant propagation in guild contexts.
   for (const guildId of client.guilds.cache.keys()) {
     try {
-      await rest.put(Routes.applicationGuildCommands(appId, guildId), { body: commands })
-      log.info(`slash: registered ${commands.length} commands to guild ${guildId}`)
+      await rest.put(Routes.applicationGuildCommands(appId, guildId), { body: [] })
+      log.info(`slash: cleared per-guild commands for guild ${guildId} (global-only; avoids #71 dupes)`)
     } catch (e) {
-      log.warn(`slash: register to guild ${guildId} failed: ${e}`)
+      log.warn(`slash: clearing guild ${guildId} commands failed: ${e}`)
     }
   }
 }
