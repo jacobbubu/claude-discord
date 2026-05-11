@@ -1604,3 +1604,43 @@ bump 0.0.15 → 0.0.16。
 命中即 emit 'allow' 短路，不调 daemon → 不弹 Discord。
 
 跟 §21 一并 in 0.0.16。
+
+### 23. `thread_reply` MCP tool — 长 reasoning 走 thread
+
+PRD §11 / FR-5.3: "思考过程 / tool trace 走线程回复"。当前 CC 长回复都堆在 channel timeline 里。新加 plugin tool 让 CC 把详细 reasoning 挂到 thread。
+
+**Tool 协议：**
+
+```jsonc
+{
+  "tool": "thread_reply",
+  "args": {
+    "chat_id": "<guild_channel_id>",
+    "parent_message_id": "<bot's main reply id>",
+    "name": "reasoning",
+    "content": "<long markdown>"
+  }
+}
+// returns
+{ "ok": true, "result": JSON.stringify({ thread_id, message_id }) }
+```
+
+**用法 pattern**（教 CC 写进 mcp-server.ts `instructions`）：
+
+```
+1. 主消息：调 reply 发短结论，记下返回 message_id
+2. 调 thread_reply(chat_id, message_id, "reasoning", "<完整推理>")
+3. 之后详细输出用 thread_id 当 chat_id 继续 reply / edit_message
+```
+
+**实施单元：**
+
+- `src/plugin/mcp-server.ts` TOOL_DEFS 加 `thread_reply`
+- `src/daemon/tool-handlers.ts` 加 `toolThreadReply`：调 `channel.threads.create({ name, startMessage: parent_message_id })` 然后 `thread.send(content)`，返 `{ thread_id, message_id }`
+- DM channel：tool 直接 fail 返 "DM channels don't support threads; use inline reply"
+- thread 默认 public（user 已 admin 权限 + bot Has Create/Send-in-Public-Threads）
+- access control：thread 不 fan-out access check（parent channel 已 opt-in 即可；thread 继承 channel 权限）
+
+**测试：** controlled e2e mock-client `channel.threads.create` 已支持，加 1 个用例验证调用参数 + 返回结构。
+
+bump 0.0.16 → 0.0.17。

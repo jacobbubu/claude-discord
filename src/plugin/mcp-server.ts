@@ -91,6 +91,21 @@ const TOOL_DEFS = [
       properties: {},
     },
   },
+  {
+    name: 'thread_reply',
+    description:
+      'Start a Discord thread under a bot message and post initial content into it. Use for long reasoning, tool traces, or detailed explanations — keeps the main channel concise. Returns { thread_id, message_id }; use thread_id as chat_id for subsequent reply/edit_message calls in the thread. Fails on DM channels (Discord DMs do not support threads).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chat_id: { type: 'string', description: 'Guild text channel id (not DM)' },
+        parent_message_id: { type: 'string', description: 'Bot message to attach thread to' },
+        name: { type: 'string', description: 'Thread title (1-100 chars)' },
+        content: { type: 'string', description: 'First message body in the thread' },
+      },
+      required: ['chat_id', 'parent_message_id', 'name', 'content'],
+    },
+  },
 ] as const
 
 /** What the MCP server needs from the rest of the plugin. */
@@ -117,6 +132,8 @@ export function buildMcpServer(dispatch: ToolDispatcher): Server {
       instructions: [
         'The sender reads Discord, not this session. Anything you want them to see must go through the reply tool — your transcript output never reaches their chat.',
         'Messages from Discord arrive as <channel source="discord" chat_id="..." message_id="..." user="..." ts="...">. Reply with the reply tool — pass chat_id back.',
+        'For LONG replies (multi-paragraph reasoning, tool traces, code explanations) in a GUILD channel: first reply with a SHORT conclusion via reply (note the returned message_id), then call thread_reply(chat_id, message_id, name, full_detail). Use the returned thread_id as chat_id for any follow-up reply / edit_message calls that should land in the thread.',
+        'For DM channels (chat_id starts with a DM channel id, threads not supported), keep long content inline; use markdown blockquotes or spoilers (||...||) to fold lengthy reasoning.',
       ].join('\n'),
     },
   )
