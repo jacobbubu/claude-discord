@@ -64,17 +64,29 @@ function makeAutocompleteInteraction(opts: {
   return { interaction, respond }
 }
 
-function makeButtonInteraction(opts: { customId: string; userId?: string }): {
+function makeButtonInteraction(opts: { customId: string; userId?: string; channelId?: string }): {
   interaction: unknown
+  update: ReturnType<typeof vi.fn>
+  reply: ReplySpy
 } {
+  const update = vi.fn().mockResolvedValue(undefined)
+  const reply: ReplySpy = vi.fn().mockResolvedValue(undefined)
   const interaction = {
     isAutocomplete: () => false,
     isButton: () => true,
     isChatInputCommand: () => false,
     customId: opts.customId,
     user: { id: opts.userId ?? 'u-1' },
+    channelId: opts.channelId ?? 'c-1',
+    update,
+    reply,
   }
-  return { interaction }
+  return { interaction, update, reply }
+}
+
+const updateContent = (update: ReturnType<typeof vi.fn>): string => {
+  const arg = update.mock.calls[0]?.[0] as { content?: string } | undefined
+  return arg?.content ?? ''
 }
 
 const replyContent = (reply: ReplySpy): string => {
@@ -254,6 +266,93 @@ describe('slash-commands', () => {
       const content = replyContent(reply)
       expect(content).not.toContain('pid')
       expect(content).toContain('<t:1700000000:f>')
+    })
+  })
+
+  describe('/use — channel↔workspace 1:1 enforcement (#75)', () => {
+    const flush = () => new Promise(r => setImmediate(r))
+
+    it('switching to a workspace already bound elsewhere → shows Move/Cancel buttons, does NOT switch', async () => {
+      registerWorkspace('foo')
+      routing.set('c-old', 'foo')
+      const { interaction, reply } = makeChatInputInteraction({
+        commandName: 'use',
+        channelId: 'c-1',
+        string: { workspace: 'foo' },
+      })
+      dispatch(interaction)
+      await flush()
+      const arg = reply.mock.calls[0]?.[0] as { content: string; components?: unknown[] }
+      expect(arg.content).toContain('already bound to')
+      expect(arg.content).toContain('<#c-old>')
+      expect(arg.components?.length).toBe(1)
+      // not switched
+      expect(routing.get('c-1')).toBeNull()
+      expect(routing.get('c-old')?.workspace).toBe('foo')
+    })
+
+    it('re-/use the same workspace in the same channel just refreshes (no conflict prompt)', async () => {
+      registerWorkspace('foo')
+      routing.set('c-1', 'foo')
+      const { interaction, reply } = makeChatInputInteraction({
+        commandName: 'use',
+        channelId: 'c-1',
+        string: { workspace: 'foo' },
+      })
+      dispatch(interaction)
+      await flush()
+      const arg = reply.mock.calls[0]?.[0] as ReplyArg
+      expect(typeof arg === 'string' ? arg : arg.content).toContain('✅ switched to foo')
+      expect(typeof arg === 'object' ? (arg as { components?: unknown[] }).components : undefined).toBeUndefined()
+    })
+
+    it('"Move it here" button: clears the old binding and binds this channel', async () => {
+      registerWorkspace('foo')
+      routing.set('c-old', 'foo')
+      const { interaction, update } = makeButtonInteraction({ customId: 'use-move:foo', channelId: 'c-1' })
+      dispatch(interaction)
+      await flush()
+      expect(routing.get('c-old')).toBeNull()
+      expect(routing.get('c-1')?.workspace).toBe('foo')
+      expect(updateContent(update)).toContain('✅ moved')
+      expect(updateContent(update)).toContain('<#c-old>')
+    })
+
+    it('"Cancel" button: leaves all bindings unchanged', async () => {
+      registerWorkspace('foo')
+      routing.set('c-old', 'foo')
+      const { interaction, update } = makeButtonInteraction({ customId: 'use-cancel', channelId: 'c-1' })
+      dispatch(interaction)
+      await flush()
+      expect(routing.get('c-old')?.workspace).toBe('foo')
+      expect(routing.get('c-1')).toBeNull()
+      expect(updateContent(update)).toContain('cancelled')
+    })
+
+    it('"Move it here" when the workspace went offline → no-op message, no binding change', async () => {
+      routing.set('c-old', 'foo') // 'foo' never registered
+      const { interaction, update } = makeButtonInteraction({ customId: 'use-move:foo', channelId: 'c-1' })
+      dispatch(interaction)
+      await flush()
+      expect(updateContent(update)).toMatch(/no longer online/)
+      expect(routing.get('c-1')).toBeNull()
+      expect(routing.get('c-old')?.workspace).toBe('foo')
+    })
+
+    it('unauthorized user clicking a use-move button gets "Not authorized." and nothing changes', async () => {
+      registerWorkspace('foo')
+      routing.set('c-old', 'foo')
+      const { interaction, reply, update } = makeButtonInteraction({
+        customId: 'use-move:foo',
+        channelId: 'c-1',
+        userId: 'intruder',
+      })
+      dispatch(interaction)
+      await flush()
+      expect(replyContent(reply)).toBe('Not authorized.')
+      expect(update).not.toHaveBeenCalled()
+      expect(routing.get('c-1')).toBeNull()
+      expect(routing.get('c-old')?.workspace).toBe('foo')
     })
   })
 

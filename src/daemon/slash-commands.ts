@@ -9,9 +9,13 @@
  */
 
 import {
+  ActionRowBuilder,
   ActivityType,
   ApplicationCommandOptionType,
   type AutocompleteInteraction,
+  ButtonBuilder,
+  type ButtonInteraction,
+  ButtonStyle,
   type ChatInputCommandInteraction,
   type Client,
   type Interaction,
@@ -147,6 +151,15 @@ export function attachInteractionHandler(deps: SlashDeps): (i: Interaction) => v
 async function handle(deps: SlashDeps, i: Interaction): Promise<void> {
   if (i.isAutocomplete()) return handleAutocomplete(deps, i)
   if (i.isButton()) {
+    // §26: /use conflict-confirmation buttons. These are slash-command's own
+    // buttons, not the permission-relay Q&A buttons — handle before delegating.
+    if (i.customId.startsWith('use-move:') || i.customId === 'use-cancel') {
+      if (!isAuthorized(deps, i.user.id)) {
+        await i.reply({ content: 'Not authorized.', ephemeral: true }).catch(() => {})
+        return
+      }
+      return handleUseButton(deps, i)
+    }
     if (deps.buttonIntercept && (await deps.buttonIntercept(i))) return
     return
   }
@@ -186,6 +199,28 @@ async function handleAutocomplete(deps: SlashDeps, i: AutocompleteInteraction): 
   await i.respond(matches.map(w => ({ name: w, value: w }))).catch(() => {})
 }
 
+/** Bind a channel to a workspace: persist routing + refresh topic + presence. */
+async function bindChannelToWorkspace(
+  deps: SlashDeps,
+  channelId: string,
+  workspace: string,
+): Promise<void> {
+  deps.routing.set(channelId, workspace, Date.now())
+  await applyTopic(deps, channelId, workspace)
+  applyPresence(deps, workspace)
+}
+
+/** Auto-show /recent context after a bind, when the heuristic says it's useful. */
+async function maybeAutoDisplayRecent(deps: SlashDeps, channelId: string, workspace: string): Promise<void> {
+  const buf = deps.ringBuffers.get(workspace)
+  if (buf && shouldAutoDisplay(buf, channelId)) {
+    const recent = buf.recent(RECENT_DEFAULT)
+    if (recent.length > 0) {
+      await deps.gateway.send(channelId, formatRecent(recent, workspace))
+    }
+  }
+}
+
 async function handleUse(deps: SlashDeps, i: ChatInputCommandInteraction): Promise<void> {
   const workspace = i.options.getString('workspace', true)
   if (!deps.registry.has(workspace)) {
@@ -197,19 +232,61 @@ async function handleUse(deps: SlashDeps, i: ChatInputCommandInteraction): Promi
   }
 
   const channelId = i.channelId
-  deps.routing.set(channelId, workspace, Date.now())
-  await applyTopic(deps, channelId, workspace)
-  applyPresence(deps, workspace)
-  await i.reply(`✅ switched to ${workspace}${formatWorkspaceHealth(deps, workspace)}`)
 
-  // Conditional auto-display of /recent context (FR-8.3)
-  const buf = deps.ringBuffers.get(workspace)
-  if (buf && shouldAutoDisplay(buf, channelId)) {
-    const recent = buf.recent(RECENT_DEFAULT)
-    if (recent.length > 0) {
-      await deps.gateway.send(channelId, formatRecent(recent, workspace))
-    }
+  // Architecture §26: enforce channel ↔ workspace 1:1. If another channel
+  // already binds this workspace, don't switch silently — ask first (so the
+  // user is aware the other channel will lose its binding).
+  const others = deps.routing.channelsFor(workspace).filter(c => c !== channelId)
+  if (others.length > 0) {
+    const list = others.map(c => `<#${c}>`).join(', ')
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`use-move:${workspace}`)
+        .setLabel('Move it here')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId('use-cancel')
+        .setLabel('Cancel')
+        .setStyle(ButtonStyle.Secondary),
+    )
+    await i.reply({
+      content: `\`${workspace}\` is already bound to ${list}. Move it to this channel?`,
+      components: [row],
+      ephemeral: true,
+    })
+    return
   }
+
+  await bindChannelToWorkspace(deps, channelId, workspace)
+  await i.reply(`✅ switched to ${workspace}${formatWorkspaceHealth(deps, workspace)}`)
+  await maybeAutoDisplayRecent(deps, channelId, workspace)
+}
+
+async function handleUseButton(deps: SlashDeps, i: ButtonInteraction): Promise<void> {
+  if (i.customId === 'use-cancel') {
+    await i.update({ content: 'cancelled.', components: [] }).catch(() => {})
+    return
+  }
+  // customId: use-move:<workspace>
+  const workspace = i.customId.slice('use-move:'.length)
+  if (!deps.registry.has(workspace)) {
+    await i.update({ content: `workspace '${workspace}' is no longer online.`, components: [] }).catch(() => {})
+    return
+  }
+  const channelId = i.channelId
+  // Re-check current binding at click time (state may have changed since the
+  // prompt was shown) — idempotent.
+  const others = deps.routing.channelsFor(workspace).filter(c => c !== channelId)
+  for (const c of others) deps.routing.unset(c)
+  await bindChannelToWorkspace(deps, channelId, workspace)
+  const was = others.length > 0 ? ` (was ${others.map(c => `<#${c}>`).join(', ')})` : ''
+  await i
+    .update({
+      content: `✅ moved \`${workspace}\` here${was}${formatWorkspaceHealth(deps, workspace)}`,
+      components: [],
+    })
+    .catch(() => {})
+  await maybeAutoDisplayRecent(deps, channelId, workspace)
 }
 
 async function handleLast(deps: SlashDeps, i: ChatInputCommandInteraction): Promise<void> {
