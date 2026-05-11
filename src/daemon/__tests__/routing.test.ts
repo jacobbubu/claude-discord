@@ -40,4 +40,29 @@ describe('RoutingTable', () => {
     const t = new RoutingTable(path)
     expect(t.get('c1')).toBeNull()
   })
+
+  it('channelsFor returns all channels bound to a workspace (§26)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rt-'))
+    const t = new RoutingTable(join(dir, 'routing.json'))
+    t.set('c1', 'foo', 1)
+    t.set('c2', 'bar', 2)
+    t.set('c3', 'foo', 3)
+    expect(t.channelsFor('foo').sort()).toEqual(['c1', 'c3'])
+    expect(t.channelsFor('bar')).toEqual(['c2'])
+    expect(t.channelsFor('nope')).toEqual([])
+  })
+
+  it('unset removes a binding and persists; no-op when not bound (§26)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rt-'))
+    const path = join(dir, 'routing.json')
+    const t = new RoutingTable(path)
+    t.set('c1', 'foo', 1)
+    t.unset('nope') // no-op, no throw
+    t.unset('c1')
+    expect(t.get('c1')).toBeNull()
+    expect(t.channelsFor('foo')).toEqual([])
+    // persisted: a fresh instance also sees it gone
+    const t2 = new RoutingTable(path)
+    expect(t2.get('c1')).toBeNull()
+  })
 })

@@ -123,4 +123,22 @@ export class RoutingTable {
   list(): Array<{ channelId: string } & RoutingEntry> {
     return Object.entries(this.data.channels).map(([channelId, e]) => ({ channelId, ...e }))
   }
+
+  /** Channel ids currently bound to `workspace` (architecture §26: enforce 1:1). */
+  channelsFor(workspace: string): string[] {
+    return Object.entries(this.data.channels)
+      .filter(([, e]) => e.workspace === workspace)
+      .map(([channelId]) => channelId)
+  }
+
+  /** Remove a channel's binding entirely. No-op if not bound. Persists. */
+  unset(channelId: string): void {
+    if (!(channelId in this.data.channels)) return
+    delete this.data.channels[channelId]
+    this.lastSelfWriteAt = Date.now()
+    atomicWrite(this.path, JSON.stringify(this.data, null, 2) + '\n', 0o600)
+    try {
+      this.lastSelfWriteAt = statSync(this.path).mtimeMs
+    } catch {}
+  }
 }

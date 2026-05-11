@@ -1742,3 +1742,30 @@ bump 0.0.17 → 0.0.18。
 **测试：** 新增 `src/plugin/__tests__/mcp-server.test.ts` regression guard，断言每条指令的关键词存在（避免后续误删）。
 
 bump 0.0.18 → 0.0.19。
+
+### 26. channel ↔ workspace 强制 1:1（`/use` 冲突时确认抢绑）
+
+**问题。** routing 表是 `channel → workspace` 多对一 —— 两个频道都可以 `/use` 绑到同一个 workspace。CC 一条一条处理 inbound，但 `conn.lastInboundChatId` 是单槽、最后到达者赢；A、B 都喂同一个 CC 时，CC 在处理 A 那条产生的 tool trace（§24）/ 权限弹窗（§16）会被路由到 B（槽里是后到的 B）。channel-as-slot 的设计意图本来就是"一个 channel 一个 workspace"，多对一是个没设防的漏洞。
+
+**不解决 §19。** §19 是 `lastInboundChatId` **陈旧**（用户跑去终端、Discord 半天没动静）；本节是**歧义**（哪个频道算源）。正交。但 1:1 让源唯一，§19 后续做 TTL 时判断更干净。
+
+**行为。** `/use <ws>` 在频道 B：
+- `<ws>` 没被任何频道绑 → 直接绑（现行 + §67 健康后缀）
+- `<ws>` 已被 B 自己绑 → 当刷新，直接确认（仍重设 topic/presence）
+- `<ws>` 已被**别的**频道 A 绑 → **先不绑**，回带按钮的 ephemeral 消息：
+  > `<ws>` 当前绑在 <#A>。`[Move it here]` `[Cancel]`
+  - `Move it here`（customId `use-move:<ws>`）→ 重新查 `<ws>` 当前绑哪些频道 → 逐个 `unset` → `set(clickChannel, <ws>)` → 重设 topic/presence → 编辑消息成 `✅ moved to here (was <#A>)`
+  - `Cancel`（customId `use-cancel`）→ 编辑成 `cancelled`
+  - 按钮只有 `allowFrom` 用户能点（复用现有 button auth）；点击时重新查当前绑定（防两次点击间状态变），幂等
+
+**实施单元。**
+- `RoutingTable` 加 `unset(channelId): void`（删条目 + 持久化）和 `channelsFor(workspace): string[]`（反查）
+- `handleUse` 加冲突检测 + 按钮分支
+- `attachInteractionHandler` 的 `isButton()` 分支在 `buttonIntercept` 之前先处理 `use-move:` / `use-cancel`（slash 自己的按钮，不走 permission relay 那条 intercept）
+- daemon 重启时不主动清理老的多对一脏数据 —— 下次谁 `/use` 谁那条被清理就够了
+
+**测试。** 无冲突直接绑 / 同频道刷新 / 冲突弹按钮不绑 / 点 Move → 旧绑定清掉新绑定建立 + topic/presence 重设 / 点 Cancel → 状态不变 / 非授权用户点按钮被拒。
+
+**对 spec 的关系。** Epic 4 的 channel-as-slot 路由不动；本节把"一个 channel 一个 workspace"从约定变成强制。FR-8（slash 命令）扩展，不反转。
+
+bump 0.0.23 → 0.0.24。
