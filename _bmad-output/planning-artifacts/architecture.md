@@ -1644,3 +1644,83 @@ PRD §11 / FR-5.3: "思考过程 / tool trace 走线程回复"。当前 CC 长�
 **测试：** controlled e2e mock-client `channel.threads.create` 已支持，加 1 个用例验证调用参数 + 返回结构。
 
 bump 0.0.16 → 0.0.17。
+
+### 24. PostToolUse hook 自动转发 tool trace 到 thread
+
+§23 把"长 reasoning 走 thread"交给 CC 自觉，但 CC 对简单查询（如"最后提交什么"）只发结论，中间 `git log` 等 tool 调用对 user 不可见。本节加 PostToolUse hook 把 channel-mode CC 的每次工具调用自动 push 到对应 Discord thread，让 user 能 audit 全过程。
+
+**前提与边界：**
+
+- CC hooks 暴露 tool input + response，但 **不暴露 thinking**（reasoning 内容）。本节只覆盖 tool 链；thinking 仍由 §23 instructions 兜底（CC 在 thread 首条自述意图）。
+- 仅 channel-mode CC 触发（hook 用 §18 walker 探祖先 cmdline 有 `--channels`，非 channel-mode 直接 return）。
+
+**消息协议（新增）：**
+
+```typescript
+CcToolTraceSchema {
+  type: 'cc_tool_trace',
+  v: 1,
+  tool_name: string,
+  tool_input: string,    // JSON.stringify(input)，超 1800 截断尾部
+  tool_response: string, // string 或 JSON.stringify(response)，超 1800 截断
+  status: 'ok' | 'error',
+  cwd?: string,          // hook 写入，daemon 反查 channel-mode connection
+}
+```
+
+加入 `WireSchema` discriminatedUnion（13 种 type）。Hook 走与 `cc_permission_request` 相同的 anonymous TCP/socket 连接，daemon 不 require register。
+
+**Skip 列表（hook 端）：**
+
+- plugin 自家 tool：`reply` / `edit_message` / `react` / `thread_reply` / `whoami` / `fetch_messages` / `download_attachment` —— 避免回环和冗余。
+- 内部状态：`TodoWrite` —— 纯 CC 内部 task 跟踪，对 user 无信息量。
+
+Skip 直接在 hook 早返回（不连 daemon），减负载。
+
+**Daemon 端：thread 复用策略**
+
+每个 channel-mode connection 维护 `activeTraceThread: { thread_id: string, parent_chat_id: string } | null`：
+
+- inbound 到达时 **清空** `activeTraceThread`（新一轮 turn 起点）
+- 第一次收到 `cc_tool_trace` 时：
+  - 用 `lastInboundChatId`（§16）作 parent channel
+  - 若该 chat 是 DM → 直接 drop trace（DM 不支持 thread）
+  - 否则 `channel.threads.create({ name: "trace · <inbound preview 前 40 字>", autoArchiveDuration: 60 })` → 缓存到 `activeTraceThread`
+- 之后所有 trace 直接 `thread.send(embed)`
+
+**Embed 格式：**
+
+```
+title: "🔧 <tool_name>" (status='error' 时改 ❌)
+description: 代码块
+  Input:
+  ```json
+  <tool_input>
+  ```
+  Output:
+  ```
+  <tool_response>
+  ```
+footer: ts
+```
+
+>4000 字符整 embed 截断（Discord embed.description 上限 4096）。
+
+**CLI 集成：**
+
+- 新子命令 `claude-discord post-tool-use-hook`，从 stdin 读 `{ tool_name, tool_input, tool_response, cwd, ... }`（CC hook protocol JSON），构 `CcToolTraceSchema` 发 daemon。
+- `install-hook` 写 settings.json 时除 PreToolUse 外再写 PostToolUse 块，matcher 同 `*`。
+- `uninstall-hook` 同步移除。
+
+**测试单元：**
+
+- hook：skip 列表、截断、非 channel-mode 直返、连不上 daemon 不抛
+- daemon：第一次 trace 建 thread；后续复用；inbound 重置；DM drop；embed 字段
+- protocol：schema roundtrip
+
+**风险与回滚：**
+
+- thread 数量爆炸：每个 inbound 一个 thread，长时间会膨胀。`autoArchiveDuration: 60`（1 小时不活跃归档），Discord 自动管理。后续可加 stretch §24.1 限频。
+- hook 阻塞 CC：fire-and-forget；写 daemon 超时 200ms 后直接 return，绝不卡住 user 的 tool 执行。
+
+bump 0.0.17 → 0.0.18。

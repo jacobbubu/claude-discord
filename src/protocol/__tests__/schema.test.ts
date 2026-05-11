@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CcToolTraceSchema,
   HeartbeatSchema,
   InboundSchema,
   RegisterAckSchema,
@@ -105,5 +106,43 @@ describe('protocol schemas', () => {
   it('discriminated union rejects unknown type', () => {
     const result = WireSchema.safeParse({ type: 'fake', v: PROTOCOL_VERSION })
     expect(result.success).toBe(false)
+  })
+
+  it('parses cc_tool_trace (deltas §24)', () => {
+    const msg = CcToolTraceSchema.parse({
+      type: 'cc_tool_trace',
+      v: PROTOCOL_VERSION,
+      tool_name: 'Bash',
+      tool_input: '{"command":"git log -1"}',
+      tool_response: 'commit abc',
+      status: 'ok',
+      cwd: '/proj',
+    })
+    expect(msg.tool_name).toBe('Bash')
+    expect(msg.status).toBe('ok')
+  })
+
+  it('cc_tool_trace status enum rejects invalid values', () => {
+    const result = CcToolTraceSchema.safeParse({
+      type: 'cc_tool_trace',
+      v: PROTOCOL_VERSION,
+      tool_name: 'Bash',
+      tool_input: '{}',
+      tool_response: '',
+      status: 'pending',
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('WireSchema routes cc_tool_trace through discriminator', () => {
+    const msg = WireSchema.parse({
+      type: 'cc_tool_trace',
+      v: PROTOCOL_VERSION,
+      tool_name: 'Read',
+      tool_input: '{}',
+      tool_response: 'file content',
+      status: 'ok',
+    })
+    expect(msg.type).toBe('cc_tool_trace')
   })
 })

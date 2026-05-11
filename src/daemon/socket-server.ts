@@ -37,6 +37,15 @@ export type CcPermissionRequestHandler = (
   msg: import('../protocol/schema.ts').CcPermissionRequestMsg,
 ) => Promise<void> | void
 
+/**
+ * Architecture deltas §24: PostToolUse hook forwards each CC tool invocation
+ * (input + response). Daemon pushes a formatted embed to the per-turn thread.
+ * Anonymous, fire-and-forget (no reply on conn).
+ */
+export type CcToolTraceHandler = (
+  msg: import('../protocol/schema.ts').CcToolTraceMsg,
+) => Promise<void> | void
+
 export type SocketServer = {
   close(): Promise<void>
 }
@@ -56,12 +65,17 @@ const noopCcPermission: CcPermissionRequestHandler = () => {
   /* deltas §15 default — no hook handler wired */
 }
 
+const noopCcToolTrace: CcToolTraceHandler = () => {
+  /* deltas §24 default — no tool trace handler wired */
+}
+
 export function startSocketServer(
   paths: Paths,
   registry: WorkspaceRegistry,
   handleToolCall: ToolCallHandler = echoHandler,
   handlePermissionRequest: PermissionRequestHandler = noopPermission,
   handleCcPermissionRequest: CcPermissionRequestHandler = noopCcPermission,
+  handleCcToolTrace: CcToolTraceHandler = noopCcToolTrace,
 ): SocketServer {
   if (existsSync(paths.socketPath)) {
     try {
@@ -72,7 +86,14 @@ export function startSocketServer(
   }
 
   const server: Server = createServer(socket =>
-    onSocket(socket, registry, handleToolCall, handlePermissionRequest, handleCcPermissionRequest),
+    onSocket(
+      socket,
+      registry,
+      handleToolCall,
+      handlePermissionRequest,
+      handleCcPermissionRequest,
+      handleCcToolTrace,
+    ),
   )
 
   server.on('error', err => log.error(`socket server error: ${err}`))
@@ -124,6 +145,7 @@ function onSocket(
   handleToolCall: ToolCallHandler,
   handlePermissionRequest: PermissionRequestHandler,
   handleCcPermissionRequest: CcPermissionRequestHandler,
+  handleCcToolTrace: CcToolTraceHandler,
 ): void {
   const conn = new Connection(socket)
   const buf = new LineBuffer()
@@ -140,6 +162,7 @@ function onSocket(
         handleToolCall,
         handlePermissionRequest,
         handleCcPermissionRequest,
+        handleCcToolTrace,
       )
     }
   })
@@ -160,6 +183,7 @@ function handleLine(
   handleToolCall: ToolCallHandler,
   handlePermissionRequest: PermissionRequestHandler,
   handleCcPermissionRequest: CcPermissionRequestHandler,
+  handleCcToolTrace: CcToolTraceHandler,
 ): void {
   conn.touch()
 
@@ -204,6 +228,13 @@ function handleLine(
       // the permission reply back on the same conn.
       void Promise.resolve(handleCcPermissionRequest(conn, msg)).catch(e =>
         log.warn(`cc_permission_request handler error: ${e}`),
+      )
+      return
+    case 'cc_tool_trace':
+      // Anonymous conn from `claude-discord-post-tool-use-hook` (deltas §24).
+      // Fire-and-forget — no reply on conn; hook exits as soon as send ack'd.
+      void Promise.resolve(handleCcToolTrace(msg)).catch(e =>
+        log.warn(`cc_tool_trace handler error: ${e}`),
       )
       return
     default:

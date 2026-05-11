@@ -132,3 +132,32 @@ describe('removeHookFromSettings', () => {
     expect(removed).toEqual(initial)
   })
 })
+
+describe('addHookToSettings — PostToolUse event (deltas §24)', () => {
+  const PRE = 'bun run /tmp/permission-hook.ts'
+  const POST = 'bun run /tmp/post-tool-use-hook.ts'
+
+  it('creates PostToolUse block without touching PreToolUse', () => {
+    const afterPre = addHookToSettings({}, PRE).settings
+    const { settings, changed } = addHookToSettings(afterPre, POST, 5, 'PostToolUse')
+    expect(changed).toBe(true)
+    expect(settings.hooks!.PreToolUse![0]!.hooks[0]!.command).toBe(PRE)
+    expect(settings.hooks!.PostToolUse![0]!.hooks[0]!.command).toBe(POST)
+    expect(settings.hooks!.PostToolUse![0]!.hooks[0]!.timeout).toBe(5)
+  })
+
+  it('is idempotent within PostToolUse event', () => {
+    const first = addHookToSettings({}, POST, 5, 'PostToolUse')
+    const second = addHookToSettings(first.settings, POST, 5, 'PostToolUse')
+    expect(second.changed).toBe(false)
+  })
+
+  it('uninstall PostToolUse leaves PreToolUse intact', () => {
+    let s = addHookToSettings({}, PRE).settings
+    s = addHookToSettings(s, POST, 5, 'PostToolUse').settings
+    const { settings, changed } = removeHookFromSettings(s, POST, 'PostToolUse')
+    expect(changed).toBe(true)
+    expect(settings.hooks!.PreToolUse).toBeDefined()
+    expect(settings.hooks!.PostToolUse).toBeUndefined()
+  })
+})

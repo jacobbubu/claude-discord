@@ -27,10 +27,12 @@ import {
 import {
   startSocketServer,
   type CcPermissionRequestHandler,
+  type CcToolTraceHandler,
   type PermissionRequestHandler,
   type ToolCallHandler,
 } from './socket-server.ts'
 import { dispatchToolCall, type ToolContext } from './tool-handlers.ts'
+import { ToolTraceRelay } from './tool-trace.ts'
 
 export async function runDaemon(): Promise<void> {
   const paths = resolvePaths()
@@ -82,12 +84,22 @@ export async function runDaemon(): Promise<void> {
         log.warn('cc_permission_request received but discord gateway not running — denying')
       }
 
+  // Architecture deltas §24: PostToolUse trace relay. Needs gateway for
+  // thread create + send; degraded mode (no gateway) drops traces silently.
+  const traceRelay = gateway ? new ToolTraceRelay(gateway, registry) : null
+  const ccToolTraceHandler: CcToolTraceHandler = traceRelay
+    ? msg => traceRelay.handle(msg)
+    : () => {
+        /* no gateway — nothing we can do with a trace */
+      }
+
   const sockServer = startSocketServer(
     paths,
     registry,
     toolDispatcher,
     permissionHandler,
     ccPermissionHandler,
+    ccToolTraceHandler,
   )
 
   if (gateway) {
