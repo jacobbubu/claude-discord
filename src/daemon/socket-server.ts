@@ -298,6 +298,7 @@ function handleRegister(
   conn.agent = msg.agent
   conn.capabilities = msg.capabilities
   conn.cwd = msg.cwd
+  conn.pid = msg.pid
   conn.state = 'registered'
   registry.register(name, conn)
 

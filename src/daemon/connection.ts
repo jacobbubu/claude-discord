@@ -18,6 +18,9 @@ export class Connection {
   /** Plugin's cwd from register handshake. Used by daemon to reverse-look-up
    *  workspace by cwd for the cc_permission_request hook (deltas §16). */
   cwd: string | null = null
+  /** Plugin process PID from register handshake. Used by /use and /last to
+   *  let the user verify the target workspace is actually alive. */
+  pid: number | null = null
   /** Last inbound message's chat_id (DM channel id or guild channel id),
    *  set by inbound-router before forwarding. Used by deltas §16 to route
    *  cc_permission_request buttons back to the prompt's source chat. */
