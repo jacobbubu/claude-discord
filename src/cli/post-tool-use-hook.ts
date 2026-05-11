@@ -1,0 +1,154 @@
+#!/usr/bin/env bun
+/**
+ * Architecture deltas §24: PostToolUse hook that forwards each CC tool
+ * invocation to the daemon, which pushes a formatted embed to the per-turn
+ * Discord thread. Lets the user audit tool I/O (git log, Bash output, Read
+ * results, ...) without polluting the main channel timeline.
+ *
+ * Wire-up: register as a `PostToolUse` hook in ~/.claude/settings.json via
+ * `claude-discord-bot install-hook` (writes both Pre- and PostToolUse).
+ *
+ * Protocol:
+ *   stdin  ← CC sends JSON { tool_name, tool_input, tool_response, ... }
+ *   stdout → empty / ignored; exit 0
+ *   wire   → daemon socket: { type: 'cc_tool_trace', ... }
+ *
+ * Behavior:
+ *   - Plugin's own tools and TodoWrite are skipped (no daemon round-trip)
+ *   - Non-channel-mode CC parents are skipped (same walker as §16)
+ *   - tool_input / tool_response truncated to 1800 chars each
+ *   - Fire-and-forget: writes to daemon then exits; never blocks CC
+ */
+
+import { connect } from 'node:net'
+import { resolvePaths } from '../shared/paths.ts'
+import { encode } from '../protocol/ndjson.ts'
+import { PROTOCOL_VERSION } from '../protocol/version.ts'
+import { shouldConnectDaemon } from '../plugin/connect-policy.ts'
+
+const FIELD_MAX = 1800
+const SEND_TIMEOUT_MS = 200
+
+/**
+ * Tools we don't want to mirror to the trace thread.
+ *
+ * - plugin's own tools: would create an echo loop (reply → thread embed of
+ *   reply → ...) and the user already saw the reply content in the channel.
+ * - TodoWrite: CC's internal task tracker — high frequency, low information.
+ * - Whitelisted read tools could be excluded too, but the user explicitly
+ *   asked for both tool I/O and reasoning visibility, so we keep Read/Grep/...
+ */
+const SKIP_TOOLS = new Set(['TodoWrite'])
+
+export function shouldSkip(toolName: string): boolean {
+  if (SKIP_TOOLS.has(toolName)) return true
+  if (toolName.startsWith('mcp__plugin_claude-discord_')) return true
+  return false
+}
+
+export function truncate(s: string, max = FIELD_MAX): string {
+  if (s.length <= max) return s
+  const head = s.slice(0, max - 30)
+  return `${head}…(truncated ${s.length - (max - 30)} chars)`
+}
+
+function stringifyMaybe(x: unknown): string {
+  if (typeof x === 'string') return x
+  if (x === undefined || x === null) return ''
+  try {
+    return JSON.stringify(x)
+  } catch {
+    return String(x)
+  }
+}
+
+/**
+ * Derive ok/error status from CC's tool_response. CC wraps tool errors in an
+ * object with `is_error: true` (Bash, etc) or simply returns a result object.
+ * Plain strings are always 'ok'.
+ */
+export function detectStatus(toolResponse: unknown): 'ok' | 'error' {
+  if (typeof toolResponse === 'object' && toolResponse !== null) {
+    const r = toolResponse as Record<string, unknown>
+    if (r.is_error === true) return 'error'
+    if (typeof r.status === 'string' && r.status.toLowerCase() === 'error') return 'error'
+  }
+  return 'ok'
+}
+
+async function readStdin(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = ''
+    process.stdin.setEncoding('utf8')
+    process.stdin.on('data', chunk => (data += chunk))
+    process.stdin.on('end', () => resolve(data))
+    process.stdin.on('error', reject)
+  })
+}
+
+function sendTrace(payload: object): Promise<void> {
+  const paths = resolvePaths()
+  return new Promise<void>(resolve => {
+    const sock = connect(paths.socketPath)
+    const timer = setTimeout(() => {
+      try {
+        sock.destroy()
+      } catch {}
+      resolve()
+    }, SEND_TIMEOUT_MS)
+    timer.unref()
+    sock.once('error', () => {
+      clearTimeout(timer)
+      resolve()
+    })
+    sock.once('connect', () => {
+      sock.write(encode(payload as never), () => {
+        clearTimeout(timer)
+        try {
+          sock.end()
+        } catch {}
+        resolve()
+      })
+    })
+  })
+}
+
+async function main(): Promise<void> {
+  // Same channel-mode gate as permission-hook: only fire for CC sessions
+  // that actually have `--channels` pointing at our plugin. Other Claude
+  // sessions (cmux, plain console) skip the trace entirely.
+  if (!shouldConnectDaemon().connect) {
+    process.exit(0)
+  }
+
+  const raw = await readStdin().catch(() => '')
+  let payload: {
+    tool_name?: string
+    tool_input?: unknown
+    tool_response?: unknown
+  } = {}
+  try {
+    payload = JSON.parse(raw)
+  } catch {
+    process.exit(0)
+  }
+
+  const toolName = payload.tool_name ?? '<unknown>'
+  if (shouldSkip(toolName)) process.exit(0)
+
+  const trace = {
+    type: 'cc_tool_trace' as const,
+    v: PROTOCOL_VERSION,
+    tool_name: toolName,
+    tool_input: truncate(stringifyMaybe(payload.tool_input)),
+    tool_response: truncate(stringifyMaybe(payload.tool_response)),
+    status: detectStatus(payload.tool_response),
+    cwd: process.cwd(),
+  }
+  await sendTrace(trace)
+  process.exit(0)
+}
+
+if (import.meta.main) {
+  void main()
+}

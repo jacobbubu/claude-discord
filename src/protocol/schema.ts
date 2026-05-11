@@ -149,6 +149,26 @@ export const CcPermissionRequestSchema = z.object({
 export type CcPermissionRequestMsg = z.infer<typeof CcPermissionRequestSchema>
 
 /**
+ * Architecture deltas §24: PostToolUse hook forwards every CC tool invocation
+ * to the daemon, which pushes a formatted embed into the per-turn Discord
+ * thread. Like cc_permission_request, this comes from an anonymous hook conn
+ * (no register). Daemon does NOT reply on the conn — it's fire-and-forget.
+ *
+ * tool_input / tool_response are pre-stringified (hook truncates to 1800
+ * chars). status is 'error' when CC's tool_response is an error object.
+ */
+export const CcToolTraceSchema = z.object({
+  type: z.literal('cc_tool_trace'),
+  v: versionField,
+  tool_name: z.string(),
+  tool_input: z.string(),
+  tool_response: z.string(),
+  status: z.enum(['ok', 'error']),
+  cwd: z.string().optional(),
+})
+export type CcToolTraceMsg = z.infer<typeof CcToolTraceSchema>
+
+/**
  * Discriminated union of every message type. Use this for parsing arbitrary
  * NDJSON lines into typed messages.
  */
@@ -165,5 +185,6 @@ export const WireSchema = z.discriminatedUnion('type', [
   PermissionRequestSchema,
   PermissionSchema,
   CcPermissionRequestSchema,
+  CcToolTraceSchema,
 ])
 export type WireMsg = z.infer<typeof WireSchema>

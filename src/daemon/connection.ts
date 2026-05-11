@@ -22,6 +22,13 @@ export class Connection {
    *  set by inbound-router before forwarding. Used by deltas §16 to route
    *  cc_permission_request buttons back to the prompt's source chat. */
   lastInboundChatId: string | null = null
+  /** Truncated preview of last inbound content — used to name the per-turn
+   *  trace thread (deltas §24). Reset on each new inbound. */
+  lastInboundPreview: string | null = null
+  /** Deltas §24: current turn's tool-trace thread. Set lazily on first
+   *  cc_tool_trace after inbound; cleared whenever a new inbound arrives so
+   *  each turn gets a fresh thread. */
+  activeTraceThreadId: string | null = null
 
   constructor(public readonly socket: Socket) {}
 
