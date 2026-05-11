@@ -24,7 +24,7 @@ import { connect } from 'node:net'
 import { resolvePaths } from '../shared/paths.ts'
 import { encode } from '../protocol/ndjson.ts'
 import { PROTOCOL_VERSION } from '../protocol/version.ts'
-import { shouldConnectDaemon } from '../plugin/connect-policy.ts'
+import { findClaudeAncestorCmdline, sniffChannelMode } from '../plugin/connect-policy.ts'
 
 const FIELD_MAX = 1800
 const SEND_TIMEOUT_MS = 200
@@ -114,10 +114,12 @@ function sendTrace(payload: object): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  // Same channel-mode gate as permission-hook: only fire for CC sessions
-  // that actually have `--channels` pointing at our plugin. Other Claude
-  // sessions (cmux, plain console) skip the trace entirely.
-  if (!shouldConnectDaemon().connect) {
+  // Channel-mode gate. Unlike permission-hook (which falls back to 'ask' for
+  // unknown contexts), tool traces have no fallback — sending them from a
+  // non-channel-mode CC would pollute another workspace's thread or silently
+  // drop server-side. So require an explicit `--channels plugin:` flag on
+  // the ancestor claude cmdline before forwarding anything.
+  if (!sniffChannelMode(findClaudeAncestorCmdline())) {
     process.exit(0)
   }
 

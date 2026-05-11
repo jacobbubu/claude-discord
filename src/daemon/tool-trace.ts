@@ -52,10 +52,17 @@ export class ToolTraceRelay {
 
   private findConnection(cwd?: string): Connection | null {
     if (!cwd) return null
+    // Same cwd can host multiple workspaces (auto-suffix on collision — e.g.
+    // free-research + free-research-2 from two CCs opened in the same dir).
+    // Prefer the one that has received an inbound (= the one actually bound
+    // to a Discord channel); fall back to the first match if none has.
+    let fallback: Connection | null = null
     for (const c of this.registry.list()) {
-      if (c.cwd === cwd) return c
+      if (c.cwd !== cwd) continue
+      if (c.lastInboundChatId) return c
+      fallback ??= c
     }
-    return null
+    return fallback
   }
 
   private async openTraceThread(conn: Connection, parentChatId: string): Promise<string | null> {

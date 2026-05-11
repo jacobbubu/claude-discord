@@ -112,6 +112,17 @@ export function sniffDangerouslySkipPermissions(cmdline: string | null): boolean
 }
 
 /**
+ * Architecture deltas §24 fix: detect whether the parent claude was launched
+ * with `--channels plugin:<name>@<marketplace>` (i.e. true channel-mode).
+ * post-tool-use-hook uses this as a strict gate — unlike permission-hook,
+ * tool traces have no 'ask' fallback, so non-channel-mode parents must skip.
+ */
+export function sniffChannelMode(cmdline: string | null): boolean {
+  if (!cmdline) return false
+  return cmdline.includes('--channels plugin:')
+}
+
+/**
  * Real-world probe: read env, plugin.json, ppid cmdline, then call
  * decideConnect. Always returns a decision (no exceptions thrown).
  */
