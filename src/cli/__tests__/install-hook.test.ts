@@ -1,7 +1,24 @@
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { addHookToSettings, removeHookFromSettings } from '../install-hook.ts'
+import { addHookToSettings, removeHookFromSettings, resolveSettingsPath } from '../install-hook.ts'
 
 const CMD = 'bun run /tmp/permission-hook.ts'
+
+describe('resolveSettingsPath (deltas #69: honor CLAUDE_CONFIG_DIR)', () => {
+  it('uses CLAUDE_CONFIG_DIR/settings.json when the env var is set', () => {
+    expect(resolveSettingsPath({ CLAUDE_CONFIG_DIR: '/Users/x/.claude-yolo2' }))
+      .toBe('/Users/x/.claude-yolo2/settings.json')
+  })
+
+  it('falls back to ~/.claude/settings.json when the env var is unset', () => {
+    expect(resolveSettingsPath({})).toBe(join(homedir(), '.claude', 'settings.json'))
+  })
+
+  it('falls back when CLAUDE_CONFIG_DIR is an empty string', () => {
+    expect(resolveSettingsPath({ CLAUDE_CONFIG_DIR: '' })).toBe(join(homedir(), '.claude', 'settings.json'))
+  })
+})
 
 describe('addHookToSettings', () => {
   it('creates hooks.PreToolUse with empty matcher block when settings empty', () => {

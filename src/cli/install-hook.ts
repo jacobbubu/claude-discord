@@ -111,7 +111,20 @@ export function removeHookFromSettings(
   return { settings: next, changed }
 }
 
-const SETTINGS_PATH = join(homedir(), '.claude', 'settings.json')
+/**
+ * CC reads its config from `$CLAUDE_CONFIG_DIR/settings.json` (defaulting to
+ * `~/.claude/settings.json`). The hook installer must write to the same file
+ * — otherwise multi-profile users (CLAUDE_CONFIG_DIR=~/.claude-foo) get the
+ * hook installed where their CC never looks. Exported for unit testing.
+ */
+export function resolveSettingsPath(env: NodeJS.ProcessEnv = process.env): string {
+  const configDir = env.CLAUDE_CONFIG_DIR && env.CLAUDE_CONFIG_DIR.length > 0
+    ? env.CLAUDE_CONFIG_DIR
+    : join(homedir(), '.claude')
+  return join(configDir, 'settings.json')
+}
+
+const SETTINGS_PATH = resolveSettingsPath()
 
 function readSettings(): Settings {
   if (!existsSync(SETTINGS_PATH)) return {}
@@ -145,7 +158,7 @@ export function installHook(): void {
   writeSettings(settings)
   if (pre.changed) log.info(`installed PreToolUse hook → ${preCmd}`)
   if (post.changed) log.info(`installed PostToolUse hook → ${postCmd}`)
-  log.info(`edit ~/.claude/settings.json to remove or run \`claude-discord-bot uninstall-hook\``)
+  log.info(`edit ${SETTINGS_PATH} to remove or run \`claude-discord-bot uninstall-hook\``)
 }
 
 export function uninstallHook(): void {
