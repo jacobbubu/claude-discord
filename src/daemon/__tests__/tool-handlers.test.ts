@@ -375,6 +375,103 @@ describe('tool-handlers', () => {
     })
   })
 
+  describe('thread_reply (§23)', () => {
+    function mockGuildChannelWithThread(opts: {
+      chatId?: string
+      parentMessage: MockMsg
+      threadId?: string
+    }) {
+      const chatId = opts.chatId ?? 'cg-1'
+      const threadId = opts.threadId ?? 'thread-1'
+      const threadSends: unknown[][] = []
+      const threadChannel = {
+        id: threadId,
+        send: vi.fn().mockImplementation((s: unknown) => {
+          threadSends.push([s])
+          return { id: `t-msg-${threadSends.length}` }
+        }),
+      }
+      const parentMsg = {
+        ...opts.parentMessage,
+        startThread: vi.fn().mockResolvedValue(threadChannel),
+      }
+      const channel = {
+        id: chatId,
+        type: ChannelType.GuildText,
+        isTextBased: () => true,
+        isThread: () => false,
+        threads: { create: vi.fn() }, // truthy
+        messages: {
+          fetch: vi.fn().mockResolvedValue(parentMsg),
+        },
+      }
+      const fetched = vi.fn().mockResolvedValue(channel)
+      ;(gateway.client.channels as unknown as { fetch: typeof fetched }).fetch = fetched
+      writeAccessFile(paths.accessFile, {
+        dmPolicy: 'pairing',
+        allowFrom: ['u-1'],
+        groups: { [chatId]: { requireMention: false, allowFrom: [] } },
+        pending: {},
+      })
+      return { chatId, threadId, threadSends, parentMsg, channel }
+    }
+
+    it('fails on missing args', async () => {
+      const r = await dispatchToolCall(ctx, 'thread_reply', { chat_id: 'x' })
+      expect(r.ok).toBe(false)
+      expect(expectFail(r).error).toMatch(/required/)
+    })
+
+    it('rejects DM channels', async () => {
+      mockDmChannel({})
+      const r = await dispatchToolCall(ctx, 'thread_reply', {
+        chat_id: 'dm-u-1',
+        parent_message_id: 'm-x',
+        name: 'reasoning',
+        content: 'long',
+      })
+      expect(r.ok).toBe(false)
+      expect(expectFail(r).error).toMatch(/DM/i)
+    })
+
+    it('starts thread under parent message and sends initial content', async () => {
+      const parent = makeMockMessage({ id: 'main-1' })
+      const { threadId, parentMsg, threadSends } = mockGuildChannelWithThread({
+        parentMessage: parent,
+      })
+      const r = await dispatchToolCall(ctx, 'thread_reply', {
+        chat_id: 'cg-1',
+        parent_message_id: 'main-1',
+        name: 'reasoning',
+        content: 'detailed reasoning here',
+      })
+      expect(r.ok).toBe(true)
+      const out = JSON.parse(expectOk(r).result)
+      expect(out.thread_id).toBe(threadId)
+      expect(out.message_id).toBe('t-msg-1')
+      expect(parentMsg.startThread).toHaveBeenCalledWith({ name: 'reasoning' })
+      expect(threadSends.length).toBe(1)
+      expect(threadSends[0]![0]).toBe('detailed reasoning here')
+    })
+
+    it('returns thread_id usable as chat_id for subsequent calls', async () => {
+      const parent = makeMockMessage({ id: 'main-1' })
+      const { threadId } = mockGuildChannelWithThread({
+        parentMessage: parent,
+        threadId: 'thread-xyz',
+      })
+      const r = await dispatchToolCall(ctx, 'thread_reply', {
+        chat_id: 'cg-1',
+        parent_message_id: 'main-1',
+        name: 'r',
+        content: 'x',
+      })
+      const out = JSON.parse(expectOk(r).result)
+      // Critical contract: thread_id is what CC will pass as chat_id later
+      expect(out.thread_id).toBe(threadId)
+    })
+  })
+
   describe('dispatch unknown tool', () => {
     it('returns "unknown tool" failure', async () => {
       const r = await dispatchToolCall(ctx, 'nonsense', {})

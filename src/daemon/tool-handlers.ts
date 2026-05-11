@@ -301,6 +301,49 @@ export async function toolDownloadAttachment(
   }
 }
 
+/**
+ * Architecture deltas §23: start a thread under a bot message, post initial
+ * content. CC uses this for long reasoning / tool traces in guild channels.
+ * DM channels don't support threads → return error.
+ */
+export async function toolThreadReply(
+  ctx: ToolContext,
+  args: Record<string, unknown>,
+): Promise<ToolOutcome> {
+  const chatId = args.chat_id as string
+  const parentId = args.parent_message_id as string
+  const name = args.name as string
+  const content = args.content as string
+  if (!chatId || !parentId || !name || typeof content !== 'string') {
+    return fail('chat_id, parent_message_id, name, content required')
+  }
+
+  const ch = await fetchTextChannel(ctx, chatId)
+  if (!ch) return fail(`channel ${chatId} not text-based or not opted-in`)
+  if (ch.type === ChannelType.DM) {
+    return fail('DM channels do not support threads — use inline reply with markdown folding')
+  }
+  if (!('threads' in ch) || !(ch as { threads?: unknown }).threads) {
+    return fail(`channel ${chatId} does not support threads`)
+  }
+
+  try {
+    const msg = await (ch as { messages: { fetch: (id: string) => Promise<Message> } }).messages.fetch(
+      parentId,
+    )
+    const thread = await (msg as unknown as {
+      startThread: (opts: { name: string }) => Promise<{ id: string; send: (s: string) => Promise<Message> }>
+    }).startThread({ name })
+    const first = await thread.send(content)
+    return {
+      ok: true,
+      result: JSON.stringify({ thread_id: thread.id, message_id: first.id }),
+    }
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e))
+  }
+}
+
 export async function dispatchToolCall(
   ctx: ToolContext,
   tool: string,
@@ -317,6 +360,8 @@ export async function dispatchToolCall(
       return toolFetchMessages(ctx, args)
     case 'download_attachment':
       return toolDownloadAttachment(ctx, args)
+    case 'thread_reply':
+      return toolThreadReply(ctx, args)
     default:
       log.warn(`unknown tool: ${tool}`)
       return fail(`unknown tool: ${tool}`)

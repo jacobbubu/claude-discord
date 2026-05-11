@@ -74,11 +74,17 @@ describe('subprocess e2e (real daemon + real plugin + MCP Client)', () => {
     client = new Client({ name: 'mock-cc', version: '0.0.1' }, { capabilities: {} })
     await client.connect(transport)
 
-    // 3. listTools should return 6 tools (5 daemon-routed + whoami local)
+    // 3. listTools should return 7 tools (6 daemon-routed + whoami local)
     const tools = await client.listTools()
     const names = tools.tools.map(t => t.name).sort()
     expect(names).toEqual([
-      'download_attachment', 'edit_message', 'fetch_messages', 'react', 'reply', 'whoami',
+      'download_attachment',
+      'edit_message',
+      'fetch_messages',
+      'react',
+      'reply',
+      'thread_reply',
+      'whoami',
     ])
 
     // 4. callTool(reply) — daemon's gateway is absent, so dispatcher returns
