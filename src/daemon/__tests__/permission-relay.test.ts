@@ -3,6 +3,7 @@
  * Discord interaction mocking — covered manually via the live test.
  */
 
+import { EventEmitter } from 'node:events'
 import { mkdtempSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -24,13 +25,17 @@ import type { Paths } from '../../shared/paths.ts'
 import { resolvePaths } from '../../shared/paths.ts'
 import { makeMockGateway } from './integration/_mock-gateway.ts'
 
-class FakeSocket {
+class FakeSocket extends EventEmitter {
   writes: string[] = []
   end() {}
   destroy() {}
   write(data: string) {
     this.writes.push(data)
     return true
+  }
+  /** Simulate the hook process exiting → its socket closing (deltas §27). */
+  simulateClose() {
+    this.emit('close')
   }
 }
 
@@ -587,6 +592,7 @@ describe('PermissionRelay.handleCcRequest §16 source-bound routing', () => {
     conn.workspace = 'free-research'
     conn.cwd = '/Users/x/free-research'
     conn.lastInboundChatId = 'cg-foo'
+    conn.lastInboundTs = Date.now() // §27: fresh, so we route to Discord (not defer)
     conn.state = 'registered'
     registry.register('free-research', conn)
 
@@ -629,12 +635,13 @@ describe('PermissionRelay.handleCcRequest §16 source-bound routing', () => {
     relay.stop()
   })
 
-  it('falls back to fan-out DM when conn matches but lastInboundChatId unset', async () => {
+  it('§27: defers to CC TUI when the matched workspace is stale (never got an inbound)', async () => {
     const { relay, registry, channelSends, dms } = setupRelayWithChannelFetch()
     const sock = new FakeSocket()
     const conn = new Connection(sock as never)
     conn.workspace = 'free-research'
     conn.cwd = '/Users/x/free-research'
+    // no lastInboundChatId / lastInboundTs → not Discord-active
     conn.state = 'registered'
     registry.register('free-research', conn)
 
@@ -650,8 +657,99 @@ describe('PermissionRelay.handleCcRequest §16 source-bound routing', () => {
       cwd: '/Users/x/free-research',
     })
 
+    // No Discord prompt at all — instead a defer reply straight to the hook conn.
     expect(channelSends.length).toBe(0)
-    expect(dms.length).toBe(1)
+    expect(dms.length).toBe(0)
+    expect(hookSock.writes.length).toBe(1)
+    const sent = JSON.parse(hookSock.writes[0]!.trim())
+    expect(sent.type).toBe('cc_permission_defer')
+    expect(sent.request_id).toBe('wxyzy')
+    relay.stop()
+  })
+
+  it('§27: routes to Discord when the matched workspace is fresh (recent inbound)', async () => {
+    const { relay, registry, channelSends, dms } = setupRelayWithChannelFetch()
+    const sock = new FakeSocket()
+    const conn = new Connection(sock as never)
+    conn.workspace = 'free-research'
+    conn.cwd = '/Users/x/free-research'
+    conn.lastInboundChatId = 'cg-fresh'
+    conn.lastInboundTs = Date.now()
+    conn.state = 'registered'
+    registry.register('free-research', conn)
+
+    const hookSock = new FakeSocket()
+    const hookConn = new Connection(hookSock as never)
+    await relay.handleCcRequest(hookConn, {
+      type: 'cc_permission_request',
+      v: 1,
+      request_id: 'qrstu',
+      tool_name: 'Bash',
+      description: 'd',
+      input_preview: '{}',
+      cwd: '/Users/x/free-research',
+    })
+
+    expect(channelSends.length).toBe(1)
+    expect(channelSends[0]!.chatId).toBe('cg-fresh')
+    expect(hookSock.writes.length).toBe(0) // no defer
+    relay.stop()
+  })
+
+  it('§27: stale wsConn → does NOT create a pending (a later button click finds nothing)', async () => {
+    const { relay, registry } = setupRelayWithChannelFetch()
+    const sock = new FakeSocket()
+    const conn = new Connection(sock as never)
+    conn.workspace = 'free-research'
+    conn.cwd = '/Users/x/free-research'
+    conn.state = 'registered'
+    registry.register('free-research', conn)
+
+    const hookSock = new FakeSocket()
+    const hookConn = new Connection(hookSock as never)
+    await relay.handleCcRequest(hookConn, {
+      type: 'cc_permission_request',
+      v: 1,
+      request_id: 'vwxyz',
+      tool_name: 'Bash',
+      description: 'd',
+      input_preview: '{}',
+      cwd: '/Users/x/free-research',
+    })
+
+    const { interaction } = makeButtonInteraction({ customId: 'perm:allow:vwxyz' })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await relay.handleButton(interaction as any)
+    // No pending was created → the button reply says "no longer pending"; no
+    // permission message dispatched to the hook conn beyond the earlier defer.
+    expect(hookSock.writes.length).toBe(1) // just the defer
+    relay.stop()
+  })
+
+  it('§27: hook conn close before answer → pending dropped (handleHookGiveup)', async () => {
+    const { relay } = setupRelayWithUserFetch()
+    const hookSock = new FakeSocket()
+    const hookConn = new Connection(hookSock as never)
+    // no workspace conn matched → fresh-check skipped → real pending created
+    await relay.handleCcRequest(hookConn, {
+      type: 'cc_permission_request',
+      v: 1,
+      request_id: 'klmno',
+      tool_name: 'Bash',
+      description: 'd',
+      input_preview: '{}',
+    })
+    hookSock.writes.length = 0
+
+    // hook process exits before anyone answers → socket closes
+    hookSock.simulateClose()
+    await new Promise(r => setImmediate(r))
+
+    // A late button click now finds no pending — it was cleaned up.
+    const { interaction } = makeButtonInteraction({ customId: 'perm:allow:klmno' })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await relay.handleButton(interaction as any)
+    expect(hookSock.writes.length).toBe(0) // nothing dispatched — pending was gone
     relay.stop()
   })
 

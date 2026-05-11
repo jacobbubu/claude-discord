@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CcPermissionDeferSchema,
   CcToolTraceSchema,
   HeartbeatSchema,
   InboundSchema,
@@ -144,5 +145,32 @@ describe('protocol schemas', () => {
       status: 'ok',
     })
     expect(msg.type).toBe('cc_tool_trace')
+  })
+
+  it('parses cc_permission_defer (deltas §27)', () => {
+    const msg = CcPermissionDeferSchema.parse({
+      type: 'cc_permission_defer',
+      v: PROTOCOL_VERSION,
+      request_id: 'abcde',
+    })
+    expect(msg.request_id).toBe('abcde')
+  })
+
+  it('cc_permission_defer rejects a malformed request_id', () => {
+    const result = CcPermissionDeferSchema.safeParse({
+      type: 'cc_permission_defer',
+      v: PROTOCOL_VERSION,
+      request_id: 'TOOLONG',
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('WireSchema routes cc_permission_defer through discriminator', () => {
+    const msg = WireSchema.parse({
+      type: 'cc_permission_defer',
+      v: PROTOCOL_VERSION,
+      request_id: 'mnopq',
+    })
+    expect(msg.type).toBe('cc_permission_defer')
   })
 })

@@ -9,6 +9,13 @@ import type { WireMsg } from '../protocol/schema.ts'
 
 export type ConnectionState = 'pre-register' | 'registered' | 'closed'
 
+/**
+ * Deltas §27: how long after the last Discord inbound a workspace still counts
+ * as "Discord-driven". Past this, permission prompts fall back to CC's TUI and
+ * tool traces are dropped (the user is plausibly at the terminal, not Discord).
+ */
+export const INBOUND_FRESHNESS_TTL_MS = 15 * 60_000
+
 export class Connection {
   state: ConnectionState = 'pre-register'
   workspace: string | null = null
@@ -25,6 +32,10 @@ export class Connection {
    *  set by inbound-router before forwarding. Used by deltas §16 to route
    *  cc_permission_request buttons back to the prompt's source chat. */
   lastInboundChatId: string | null = null
+  /** Wall-clock ms of the last inbound (deltas §27). null = never received an
+   *  inbound. Used by isInboundFresh() to decide if this workspace is still
+   *  "Discord-driven". */
+  lastInboundTs: number | null = null
   /** Truncated preview of last inbound content — used to name the per-turn
    *  trace thread (deltas §24). Reset on each new inbound. */
   lastInboundPreview: string | null = null
@@ -46,6 +57,16 @@ export class Connection {
 
   touch(): void {
     this.lastActivityTs = Date.now()
+  }
+
+  /**
+   * Deltas §27: has this workspace received a Discord inbound within `ttlMs`?
+   * Never-received (lastInboundTs null) → false. Used to gate whether
+   * permission prompts go to Discord vs CC's TUI, and whether tool traces are
+   * forwarded.
+   */
+  isInboundFresh(ttlMs: number = INBOUND_FRESHNESS_TTL_MS): boolean {
+    return this.lastInboundTs != null && Date.now() - this.lastInboundTs < ttlMs
   }
 
   close(): void {

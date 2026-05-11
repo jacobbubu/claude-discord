@@ -1552,9 +1552,9 @@ bump 0.0.11 → 0.0.12。
 
 bump 0.0.13 → 0.0.14。
 
-### 19. （讨论中，未实施）`lastInboundChatId` TTL + cc TUI fallback
+### 19. `lastInboundChatId` TTL + cc TUI fallback — **superseded by §27**
 
-**待讨论。** 见 commit history / chat。
+原占位（"待讨论"）。落地见 §27（inbound 新鲜度 TTL + 权限提示 Discord↔TUI 路由 + hook 有界等待 + hook 放弃时收掉按钮）。本节不再单独实施。
 
 ### 20. "Allow always" 按钮 — 写 tool 到 settings.json
 
@@ -1769,3 +1769,33 @@ bump 0.0.18 → 0.0.19。
 **对 spec 的关系。** Epic 4 的 channel-as-slot 路由不动；本节把"一个 channel 一个 workspace"从约定变成强制。FR-8（slash 命令）扩展，不反转。
 
 bump 0.0.23 → 0.0.24。
+
+### 27. 权限提示 Discord ↔ TUI 路由：inbound 新鲜度 TTL + 有界等待 + hook 放弃时收掉按钮
+
+**问题。** §16 把 CC 内置 tool 的权限弹窗路由到 `conn.lastInboundChatId`（最近一次 Discord 消息来的频道）。但这个值不过期：你在频道 C 干完一轮，再去终端直接给同一个 CC 发 prompt，CC 跑工具 → PreToolUse hook 发 `cc_permission_request` → daemon 还是把 Allow/Deny 按钮 DM 发到频道 C → 你人在终端看不到 → CC 的工具卡住，hook 超时是 **1 小时**。同理 §24 的 tool trace 会被 post 进频道 C 上一轮的 trace thread，污染频道。daemon 分不清"这次 tool 调用属于 Discord 那轮还是终端那轮" —— hook 只带 `cwd`，CC 不回报"我在处理非 Discord 的 prompt"。
+
+**不能根治"切到终端后短时间内"的窗口** —— 那要让 CC 在 MCP 回路里带回 source chat_id，超出本节范围。本节用"最近一次 Discord inbound 有多久了"当代理：超过 TTL → 认定"这个 workspace 当前不是 Discord 驱动的"。
+
+**改动。**
+
+- `Connection` 加 `lastInboundTs: number | null`（`inbound-router` 在设 `lastInboundChatId` 时一并设）+ `isInboundFresh(ttlMs = INBOUND_FRESHNESS_TTL_MS): boolean`。`INBOUND_FRESHNESS_TTL_MS` 默认 15 分钟。从没收过 inbound（`null`）算"不新鲜"。
+- **权限路径**：`permission-relay.handleCcRequest` 先按 cwd 找 conn，若 `!conn.isInboundFresh()` → 立刻在 hook conn 上回一条新消息 `cc_permission_defer { request_id }`（**不创建 pending、不发 DM**）→ hook 收到 → `emitDecision('ask')` → CC 用自己的 TUI 弹窗（你人在那）。新鲜则照旧创建 pending + 发按钮 DM。
+- **trace 路径**：`ToolTraceRelay.handle` 加 `if (!conn.isInboundFresh()) return`（drop，别污染频道）。trace 是 fire-and-forget，不需要回 hook 任何东西。
+- **PreToolUse hook 有界等待**：`permission-hook.ts` `TIMEOUT_MS` 从 1h 砍到 **3 分钟**。新鲜 conn 等不到点击就回退 TUI；陈旧 conn 根本不等（拿到 `cc_permission_defer` 立即回退）。`askDiscord` 返回类型扩成 `'allow' | 'deny' | 'defer'`，`main()` 里 `'defer'` → `emitDecision('ask', ...)`。
+- **hook 放弃时收掉按钮**：`permission-relay.handleRequest` 给 hook target 在 `conn.socket.once('close', ...)` 上挂 `handleHookGiveup(request_id)` —— hook 进程退出（超时 emit 'ask' / 被杀 / CC 死）时 socket 关闭：若该 `request_id` 的 pending 还在（没被 `handleButton` claim 掉）→ 删 pending + 把按钮 DM 编辑成「⌛ 已在别处处理 — 此按钮已失效」。若 pending 已被 claim（用户点了按钮，hook 收到答案后正常退出）→ 找不到 pending → no-op。
+
+**新协议消息。** `CcPermissionDeferSchema { type:'cc_permission_defer', v, request_id: /^[a-km-z]{5}$/ }` 加入 `WireSchema`。匿名 hook conn 上单向（daemon → hook）。
+
+**与 §19 的关系。** §19 当时只是占位（"`lastInboundChatId` TTL + cc TUI fallback，待讨论"）—— 本节就是它的落地，范围锁定在权限 + trace 两条路径，多源歧义那块明确不在内。§19 标记为 superseded by §27。
+
+**与 §21 的关系。** `--dangerously-skip-permissions` 的 CC，hook 在 §21 那步就 emit 'allow' 了，根本不碰 daemon —— 本节的权限部分只对没带该 flag 的 CC 生效。trace 部分不受 §21 影响。
+
+**测试。**
+- `Connection.isInboundFresh`：null → false；刚设 → true；超 TTL → false
+- `handleCcRequest`：陈旧 conn → 回 `cc_permission_defer`，不创建 pending、不发 DM；新鲜 conn → 照旧
+- `ToolTraceRelay`：陈旧 conn → drop（不建 thread）
+- `permission-hook`：收到 `cc_permission_defer` → emit 'ask'
+- `handleHookGiveup`：pending 还在 → 删 + 编辑消息；pending 已被 claim → no-op
+- schema：`cc_permission_defer` roundtrip
+
+bump 0.0.24 → 0.0.25。

@@ -64,13 +64,21 @@ function makeGateway() {
   return { gateway, addParent, created, sent, channels }
 }
 
-function makeConn(cwd: string, chatId: string | null, preview = 'hello'): Connection {
+function makeConn(
+  cwd: string,
+  chatId: string | null,
+  preview = 'hello',
+  // §27: a conn with a chat id is assumed freshly Discord-active unless the
+  // caller overrides lastInboundTs (e.g. to test the stale-drop path).
+  lastInboundTs: number | null = chatId != null ? Date.now() : null,
+): Connection {
   const conn = new Connection({} as never)
   conn.workspace = 'work'
   conn.cwd = cwd
   conn.state = 'registered'
   conn.lastInboundChatId = chatId
   conn.lastInboundPreview = preview
+  conn.lastInboundTs = lastInboundTs
   return conn
 }
 
@@ -127,6 +135,20 @@ describe('ToolTraceRelay.handle', () => {
     const relay = new ToolTraceRelay(g.gateway, reg)
     await relay.handle(makeTrace({ cwd: '/work' }))
     expect(g.created.length).toBe(0)
+  })
+
+  it('§27: drops trace when the conn is bound but its inbound is stale (terminal-driven turn)', async () => {
+    const reg = new WorkspaceRegistry()
+    // bound to a channel, but lastInboundTs is an hour ago → not Discord-active
+    const conn = makeConn('/work', 'parent-stale', 'old turn', Date.now() - 60 * 60_000)
+    reg.register('work', conn)
+    const g = makeGateway()
+    g.addParent('parent-stale', ChannelType.GuildText)
+    const relay = new ToolTraceRelay(g.gateway, reg)
+    await relay.handle(makeTrace({ cwd: '/work' }))
+    expect(g.created.length).toBe(0)
+    expect(g.sent.length).toBe(0)
+    expect(conn.activeTraceThreadId).toBeNull()
   })
 
   it('starts a fresh thread after activeTraceThreadId is reset (new turn)', async () => {

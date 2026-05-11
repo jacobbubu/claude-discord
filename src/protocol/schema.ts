@@ -169,6 +169,21 @@ export const CcToolTraceSchema = z.object({
 export type CcToolTraceMsg = z.infer<typeof CcToolTraceSchema>
 
 /**
+ * Architecture deltas §27: daemon → hook reply telling the hook to give up on
+ * Discord and let CC's own TUI prompt handle this permission. Sent when the
+ * target workspace hasn't received a Discord inbound recently (`isInboundFresh`
+ * is false) — i.e. the user is plausibly at the terminal, not on Discord, so
+ * routing the button DM there would just hang. The hook responds by emitting
+ * `permissionDecision: 'ask'`. Anonymous hook conn, one-shot.
+ */
+export const CcPermissionDeferSchema = z.object({
+  type: z.literal('cc_permission_defer'),
+  v: versionField,
+  request_id: z.string().regex(/^[a-km-z]{5}$/),
+})
+export type CcPermissionDeferMsg = z.infer<typeof CcPermissionDeferSchema>
+
+/**
  * Discriminated union of every message type. Use this for parsing arbitrary
  * NDJSON lines into typed messages.
  */
@@ -186,5 +201,6 @@ export const WireSchema = z.discriminatedUnion('type', [
   PermissionSchema,
   CcPermissionRequestSchema,
   CcToolTraceSchema,
+  CcPermissionDeferSchema,
 ])
 export type WireMsg = z.infer<typeof WireSchema>
