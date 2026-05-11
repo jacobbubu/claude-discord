@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decideConnect } from '../connect-policy.ts'
+import { decideConnect, sniffChannelMode } from '../connect-policy.ts'
 
 describe('decideConnect', () => {
   const baseInput = {
@@ -119,5 +119,35 @@ describe('decideConnect', () => {
       connect: true,
       reason: 'CLAUDE_DISCORD_FORCE_CONNECT=1 override',
     })
+  })
+})
+
+describe('sniffChannelMode (§24 fix: strict hook gate)', () => {
+  it('returns true when cmdline contains --channels plugin:', () => {
+    expect(
+      sniffChannelMode('claude --channels plugin:claude-discord@jacobbubu'),
+    ).toBe(true)
+  })
+
+  it('returns false when cmdline has no --channels flag', () => {
+    expect(sniffChannelMode('claude')).toBe(false)
+    expect(sniffChannelMode('claude --dangerously-skip-permissions')).toBe(false)
+  })
+
+  it('returns false when --channels uses a non-plugin syntax', () => {
+    // Defensive: --channels exists but with no plugin: prefix is not what we expect.
+    expect(sniffChannelMode('claude --channels something-else')).toBe(false)
+  })
+
+  it('returns false when cmdline is null (probe failed / no ancestor)', () => {
+    expect(sniffChannelMode(null)).toBe(false)
+  })
+
+  it('coexists with --dangerously-skip-permissions flag', () => {
+    expect(
+      sniffChannelMode(
+        'claude --channels plugin:claude-discord@jacobbubu --dangerously-skip-permissions',
+      ),
+    ).toBe(true)
   })
 })

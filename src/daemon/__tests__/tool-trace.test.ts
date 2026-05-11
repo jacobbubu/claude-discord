@@ -161,6 +161,45 @@ describe('ToolTraceRelay.handle', () => {
     await relay.handle(makeTrace({ cwd: '/work' }))
     expect(g.created[0]!.name.length).toBeLessThanOrEqual(100)
   })
+
+  it('prefers same-cwd conn with lastInboundChatId over the dead twin (§24 fix)', async () => {
+    // Reproduce the production case: two workspaces auto-suffixed in same cwd,
+    // only one bound to a Discord channel. Trace must land on the live one.
+    const reg = new WorkspaceRegistry()
+    const dead = makeConn('/work', null, '')
+    dead.workspace = 'free-research'
+    reg.register('free-research', dead)
+    const live = makeConn('/work', 'parent-live', 'live turn')
+    live.workspace = 'free-research-2'
+    reg.register('free-research-2', live)
+
+    const g = makeGateway()
+    g.addParent('parent-live', ChannelType.GuildText)
+
+    const relay = new ToolTraceRelay(g.gateway, reg)
+    await relay.handle(makeTrace({ cwd: '/work' }))
+
+    expect(g.created.length).toBe(1)
+    expect(g.created[0]!.parentId).toBe('parent-live')
+    expect(live.activeTraceThreadId).not.toBeNull()
+    expect(dead.activeTraceThreadId).toBeNull()
+  })
+
+  it('falls back to first match when no same-cwd conn has lastInboundChatId', async () => {
+    const reg = new WorkspaceRegistry()
+    const a = makeConn('/work', null, '')
+    a.workspace = 'ws-a'
+    reg.register('ws-a', a)
+    const b = makeConn('/work', null, '')
+    b.workspace = 'ws-b'
+    reg.register('ws-b', b)
+
+    const g = makeGateway()
+    const relay = new ToolTraceRelay(g.gateway, reg)
+    await relay.handle(makeTrace({ cwd: '/work' }))
+    // No conn had a lastInboundChatId — relay falls through and drops cleanly.
+    expect(g.created.length).toBe(0)
+  })
 })
 
 describe('formatBody', () => {
