@@ -237,7 +237,7 @@ describe('slash-commands', () => {
       const content = replyContent(reply)
       expect(content).toContain('✅ switched to foo')
       expect(content).toContain('pid 12345')
-      expect(content).toContain('<t:1700000000:R>')
+      expect(content).toContain('<t:1700000000:f>')
     })
 
     it('omits pid when register didn\'t carry one (forward-compat with older plugins)', async () => {
@@ -253,7 +253,7 @@ describe('slash-commands', () => {
       await new Promise(r => setImmediate(r))
       const content = replyContent(reply)
       expect(content).not.toContain('pid')
-      expect(content).toContain('<t:1700000000:R>')
+      expect(content).toContain('<t:1700000000:f>')
     })
   })
 

@@ -234,17 +234,22 @@ async function handleLast(deps: SlashDeps, i: ChatInputCommandInteraction): Prom
 }
 
 /**
- * Render a short "(pid N, last active <t:...:R>)" suffix for the target
+ * Render a short "(pid N, last active <t:...:f>)" suffix for the target
  * workspace, so the user can confirm at a glance that it's actually alive.
  * Returns empty string if the conn is somehow gone (race between has() and
  * get()), keeping the main reply readable.
+ *
+ * Uses the `:f` (absolute short date+time) Discord format rather than `:R`
+ * (relative) — relative timestamps re-render live, so two back-to-back
+ * /status calls show different values and a single message visibly drifts,
+ * which reads as a glitch (#73).
  */
 export function formatWorkspaceHealth(deps: SlashDeps, workspace: string): string {
   const conn = deps.registry.get(workspace)
   if (!conn) return ''
   const ts = Math.floor(conn.lastActivityTs / 1000)
   const pidPart = conn.pid != null ? `pid ${conn.pid}, ` : ''
-  return ` (${pidPart}last active <t:${ts}:R>)`
+  return ` (${pidPart}last active <t:${ts}:f>)`
 }
 
 async function handleList(deps: SlashDeps, i: ChatInputCommandInteraction): Promise<void> {
@@ -257,7 +262,7 @@ async function handleList(deps: SlashDeps, i: ChatInputCommandInteraction): Prom
   const sorted = [...conns].sort((a, b) => b.lastActivityTs - a.lastActivityTs)
   const lines = sorted.map(c => {
     const ts = Math.floor(c.lastActivityTs / 1000)
-    return `• \`${c.workspace}\` (\`${c.agent}\`) — last activity <t:${ts}:R>`
+    return `• \`${c.workspace}\` (\`${c.agent}\`) — last activity <t:${ts}:f>`
   })
   await i.reply({ content: lines.join('\n'), ephemeral: true })
 }
@@ -286,7 +291,7 @@ async function handleStatusCmd(
   }
   const ts = Math.floor(conn.lastActivityTs / 1000)
   await i.reply({
-    content: `\`${target}\` — online (\`${conn.agent}\`), last activity <t:${ts}:R>`,
+    content: `\`${target}\` — online (\`${conn.agent}\`), last activity <t:${ts}:f>`,
     ephemeral: true,
   })
 }
@@ -301,7 +306,7 @@ async function handleWhich(deps: SlashDeps, i: ChatInputCommandInteraction): Pro
   const status = conn ? 'online' : 'offline'
   const switched = Math.floor(route.switched_at / 1000)
   await i.reply({
-    content: `bound to \`${route.workspace}\` — ${status}, switched <t:${switched}:R>`,
+    content: `bound to \`${route.workspace}\` — ${status}, switched <t:${switched}:f>`,
     ephemeral: true,
   })
 }
