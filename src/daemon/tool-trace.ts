@@ -34,6 +34,13 @@ export class ToolTraceRelay {
       log.debug(`cc_tool_trace: no workspace conn for cwd=${msg.cwd ?? '<none>'} — dropping`)
       return
     }
+    // Deltas §27: if this workspace hasn't seen a Discord inbound recently the
+    // tool call is plausibly part of a terminal-driven turn — don't push its
+    // trace into a Discord thread the user isn't watching.
+    if (!conn.isInboundFresh()) {
+      log.debug(`cc_tool_trace: workspace ${conn.workspace} inbound stale — dropping trace`)
+      return
+    }
     const parentChatId = conn.lastInboundChatId
     if (!parentChatId) {
       log.debug(`cc_tool_trace: workspace ${conn.workspace} has no lastInboundChatId — dropping`)

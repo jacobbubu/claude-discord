@@ -33,7 +33,11 @@ import {
   sniffDangerouslySkipPermissions,
 } from '../plugin/connect-policy.ts'
 
-const TIMEOUT_MS = 60 * 60 * 1000 // 1h — match permission-relay TTL
+// Architecture deltas §27: bounded wait for a Discord button click. If the
+// workspace is stale (no recent Discord inbound) the daemon answers with
+// `cc_permission_defer` almost immediately; if it's fresh but nobody clicks,
+// we fall back to CC's own TUI prompt after this instead of hanging an hour.
+const TIMEOUT_MS = 3 * 60 * 1000 // 3min
 
 // Local read/search tools that don't need Discord-side approval. User can
 // adjust by editing this array (rebuild hook) or by adding/removing
@@ -166,11 +170,13 @@ async function readStdin(): Promise<string> {
   })
 }
 
-async function askDiscord(toolName: string, toolInput: unknown): Promise<'allow' | 'deny'> {
+type DiscordVerdict = 'allow' | 'deny' | 'defer'
+
+async function askDiscord(toolName: string, toolInput: unknown): Promise<DiscordVerdict> {
   const paths = resolvePaths()
   const requestId = makeRequestId()
 
-  return new Promise<'allow' | 'deny'>((resolve, reject) => {
+  return new Promise<DiscordVerdict>((resolve, reject) => {
     const sock = connect(paths.socketPath)
     const buf = new LineBuffer()
     const timer = setTimeout(() => {
@@ -218,6 +224,15 @@ async function askDiscord(toolName: string, toolInput: unknown): Promise<'allow'
             sock.end()
           } catch {}
           resolve(msg.behavior)
+        }
+        // Architecture deltas §27: daemon decided this workspace isn't
+        // Discord-active right now — let CC's TUI prompt handle it.
+        if (msg.type === 'cc_permission_defer' && msg.request_id === requestId) {
+          clearTimeout(timer)
+          try {
+            sock.end()
+          } catch {}
+          resolve('defer')
         }
       }
     })
@@ -270,6 +285,11 @@ async function main(): Promise<void> {
 
   try {
     const verdict = await askDiscord(toolName, payload.tool_input ?? {})
+    if (verdict === 'defer') {
+      // §27: daemon says this workspace isn't Discord-active — use CC's TUI.
+      emitDecision('ask', 'permission-hook: daemon deferred (workspace not Discord-active)')
+      return
+    }
     emitDecision(verdict)
   } catch (e) {
     // Daemon unreachable / timeout / etc — let CC handle via its normal

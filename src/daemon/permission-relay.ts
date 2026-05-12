@@ -53,8 +53,8 @@ type Pending = {
   tool_name: string
   description: string
   input_preview: string
-  /** Track the messages we've sent so "See more" can edit them. */
-  messageRefs: { userId: string; messageId: string }[]
+  /** Track the messages we've sent so we can edit them (See more / §27 giveup). */
+  messageRefs: { userId: string; channelId: string; messageId: string }[]
   /** Unix ms after which this entry is considered stale and dispatch denied. */
   expiresAt: number
 }
@@ -120,17 +120,26 @@ export class PermissionRelay {
    */
   async handleCcRequest(conn: Connection, msg: CcPermissionRequestMsg): Promise<void> {
     // Architecture deltas §16: route the button DM to the prompt's source
-    // chat instead of fan-out. Use the cwd to find the matching workspace
-    // conn, then read its lastInboundChatId (set by inbound-router).
-    let sourceChatId: string | null = null
-    if (msg.cwd) {
-      for (const c of this.registry.list()) {
-        if (c.cwd === msg.cwd && c.lastInboundChatId) {
-          sourceChatId = c.lastInboundChatId
-          break
-        }
+    // chat instead of fan-out. Find the workspace conn by cwd, then read its
+    // lastInboundChatId (set by inbound-router).
+    const wsConn = msg.cwd ? this.registry.list().find(c => c.cwd === msg.cwd) ?? null : null
+
+    // Architecture deltas §27: if that workspace hasn't seen a Discord inbound
+    // recently, the user is plausibly at the terminal — don't route the button
+    // DM to a channel they aren't watching; tell the hook to use CC's TUI.
+    // (Only applies when we actually matched a workspace conn; an unmatched
+    //  cwd keeps the old fan-out behavior.)
+    if (wsConn && !wsConn.isInboundFresh()) {
+      log.info(`cc_permission_request ${msg.request_id}: workspace ${wsConn.workspace} inbound stale — deferring to CC TUI`)
+      try {
+        conn.send({ type: 'cc_permission_defer', v: PROTOCOL_VERSION, request_id: msg.request_id })
+      } catch (e) {
+        log.warn(`cc_permission_request ${msg.request_id}: defer write failed: ${e}`)
       }
+      return
     }
+
+    const sourceChatId = wsConn?.lastInboundChatId ?? null
     return this.handleRequest(
       { kind: 'hook', conn },
       'cc-builtin',
@@ -174,6 +183,15 @@ export class PermissionRelay {
       expiresAt: Date.now() + PENDING_TTL_MS,
     }
     this.pending.set(request_id, entry)
+
+    // Architecture deltas §27: a hook conn closes when the hook process exits
+    // — either because it got our answer (pending already claimed → no-op
+    // below) or because it timed out / was killed before any answer (pending
+    // still present → mark the buttons stale so the user isn't left clicking
+    // a dead control while CC's TUI now owns the prompt).
+    if (target.kind === 'hook') {
+      target.conn.socket.once('close', () => this.handleHookGiveup(request_id))
+    }
 
     const prefix = source === 'cc-builtin' ? '🔐 CC tool' : '🔐 Permission'
     const summary = description.split('\n', 1)[0]?.trim() || ''
@@ -222,9 +240,9 @@ export class PermissionRelay {
         const ch = await this.gateway.client.channels.fetch(sourceChatId)
         if (ch && 'send' in ch && typeof (ch as { send?: unknown }).send === 'function') {
           const sent = await (
-            ch as { send: (o: { content: string; components: unknown[] }) => Promise<{ id: string }> }
+            ch as { send: (o: { content: string; components: unknown[] }) => Promise<{ id: string; channelId: string }> }
           ).send({ content: text, components: [row] })
-          entry.messageRefs.push({ userId: '<source-chat>', messageId: sent.id })
+          entry.messageRefs.push({ userId: '<source-chat>', channelId: sourceChatId, messageId: sent.id })
           sourceChatSucceeded = true
         }
       } catch (e) {
@@ -237,7 +255,7 @@ export class PermissionRelay {
         try {
           const user = await this.gateway.client.users.fetch(userId)
           const sent = await user.send({ content: text, components: [row] })
-          entry.messageRefs.push({ userId, messageId: sent.id })
+          entry.messageRefs.push({ userId, channelId: sent.channelId, messageId: sent.id })
         } catch (e) {
           log.warn(`permission DM to ${userId} failed: ${e}`)
         }
@@ -344,6 +362,40 @@ export class PermissionRelay {
     if (!entry) return null
     this.pending.delete(requestId)
     return entry
+  }
+
+  /**
+   * Architecture deltas §27: the hook conn that opened `requestId` closed. If
+   * the request is still pending, the hook gave up (timed out) or died before
+   * an answer — drop it and edit the button message(s) so a late click gets a
+   * clear "this is dead now" instead of a confusing fake "✅ Allowed".
+   * If the request was already claimed (button clicked → hook exited normally
+   * after receiving the answer), there's nothing to do.
+   */
+  private handleHookGiveup(requestId: string): void {
+    const entry = this.pending.get(requestId)
+    if (!entry) return
+    this.pending.delete(requestId)
+    log.info(`permission ${requestId}: hook conn closed before answer — marking buttons stale`)
+    void this.editAllRefs(entry, '⌛ No longer active — answer in the terminal.')
+  }
+
+  /** Append a status line to every button message we sent and strip the buttons. */
+  private async editAllRefs(entry: Pending, label: string): Promise<void> {
+    for (const ref of entry.messageRefs) {
+      try {
+        const ch = await this.gateway.client.channels.fetch(ref.channelId)
+        const msgs = (ch as { messages?: { fetch?: (id: string) => Promise<unknown> } } | null)?.messages
+        if (!msgs || typeof msgs.fetch !== 'function') continue
+        const m = (await msgs.fetch(ref.messageId)) as {
+          content: string
+          edit: (o: { content: string; components: unknown[] }) => Promise<unknown>
+        }
+        await m.edit({ content: `${m.content}\n\n${label}`, components: [] })
+      } catch {
+        // message or channel gone, missing perms, etc — best-effort only
+      }
+    }
   }
 
   /**
