@@ -16,6 +16,7 @@ import { resolvePaths } from '../shared/paths.ts'
 import { PROTOCOL_VERSION } from '../protocol/version.ts'
 import type { WireMsg } from '../protocol/schema.ts'
 import { shouldConnectDaemon } from './connect-policy.ts'
+import { startOrphanWatcher } from './orphan-watcher.ts'
 import { backoffDelayMs, delay } from './reconnect.ts'
 import { buildWhoamiResult } from './whoami.ts'
 import {
@@ -39,6 +40,10 @@ const PermissionRequestNotificationSchema = z.object({
 })
 
 const HEARTBEAT_MS = 10_000
+
+// §28: real parent CC pid, captured before anything can change it. The orphan
+// watcher uses this to notice if the parent dies and we got reparented.
+const PARENT_PID = process.ppid
 
 const SOCKET_PATH = process.env.CLAUDE_DISCORD_SOCKET ?? resolvePaths().socketPath
 const PLUGIN_AGENT = 'claude-code'
@@ -250,5 +255,10 @@ process.on('SIGINT', () => process.exit(0))
 // after parent CC TUI exit.
 process.stdin.on('end', () => process.exit(0))
 process.stdin.on('close', () => process.exit(0))
+
+// §28: third line of defense — if the parent CC dies and the stdio-close
+// signals above somehow don't fire, notice the reparent (process.ppid changes)
+// and exit. Cheap poll, .unref()'d so it never keeps us alive on its own.
+startOrphanWatcher({ originalPpid: PARENT_PID })
 
 process.stderr.write(`plugin: started (path=${SOCKET_PATH})\n`)

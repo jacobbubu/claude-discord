@@ -1799,3 +1799,17 @@ bump 0.0.23 → 0.0.24。
 - schema：`cc_permission_defer` roundtrip
 
 bump 0.0.24 → 0.0.25。
+
+### 28. plugin 父进程探活 — 第三道反僵尸防线
+
+**问题。** plugin 自杀靠两道机制：`mcp-server.ts` 的 `transport.onclose = () => process.exit(0)`（stdio 管道关闭）和 `index.ts` 的 `process.stdin.on('end'/'close', () => process.exit(0))`。这俩覆盖绝大多数情况（父 CC 正常退出、被 SIGKILL —— OS 都会关掉 stdin 管道）。但历史上仍出现过僵尸 plugin（多是 0.0.x 早期版本，那时这两道还没加）；理论上也存在"stdin close 事件因某种原因没派发"的极端情况。
+
+**改动。** 加第三道：plugin 启动时记下真实父 pid（`process.ppid`），定期（5s）检查 `process.ppid` 是否变了 —— 父进程一死，孤儿就被 reparent 到 launchd/init（pid 1），`process.ppid` 随之改变。这个信号比 `kill(originalPpid, 0)` 稳（后者会被 pid 复用骗到）。变了 → `process.exit(0)`。
+
+- 新模块 `src/plugin/orphan-watcher.ts`：`startOrphanWatcher({ originalPpid, getPpid?, onOrphan?, intervalMs? })` → `{ stop }`。`getPpid`/`onOrphan` 可注入，便于单测；默认 `() => process.ppid` / `() => process.exit(0)` / 5000ms。timer `.unref()`，不阻止进程退出。
+- `index.ts` 启动末尾调一次 `startOrphanWatcher({ originalPpid: process.ppid })`。
+- 不特判"启动时 ppid 已是 1"（plugin 总是 CC 的子进程，不存在这种情况）。
+
+**测试。** ppid 不变 → 不触发；ppid 变（父死→reparent）→ 触发一次；`stop()` 后不再触发；`stop()` 幂等。用 vitest fake timers。
+
+bump 0.0.25 → 0.0.26。
