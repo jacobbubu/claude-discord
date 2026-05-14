@@ -1836,3 +1836,17 @@ bump 0.0.25 → 0.0.26。
 **测试。** `buildCommandList([])` workspace 参数无 choices；`buildCommandList(['foo','bar'])` 有 2 项 choices；26 个 workspace 只保留前 25；`workspaceListChanged` 顺序无关比较；`WorkspaceRegistry.onChange` 在 register/unregister/eviction 后触发，返回的 unsubscribe 能停。
 
 bump 0.0.26 → 0.0.27。
+
+### 30. daemon `clientReady` 启动宽限 — 首次 slash 注册等 plugin 重连一下
+
+**问题。** §29 的 daemon 启动流程是：`clientReady` 立即调 `registerSlashCommands(...)`，用当时 `registry.list()` 的快照。但 daemon 重启时，已存在的 plugin 进程要走 reconnect 流程（exponential backoff，~几百毫秒到 1s）才重新 `register`。所以首次注册时 `currentWorkspaces()` 大概率是空的 → 首次 PUT 的 `/use` 没 choices（退化成 plain string）。几秒后 `onChange` 触发 debounce 500ms 再 PUT 一次正确的 → mobile 用户若刚好在那 1-2s 窗口打开 `/use` 会看到空下拉，刷新一次（关重开 Discord）才正常。
+
+**改动。** `clientReady` 之后等 2 秒再首次注册 —— 给本地 plugin 留 reconnect + register 的时间。代价：全新安装（没任何 CC 在跑）cold-start 时 slash 命令晚出现 2 秒，可忽略。
+
+- `daemon/index.ts` 在 `clientReady` 回调里、首次 `registerSlashCommands` 之前 `await new Promise(r => setTimeout(r, STARTUP_GRACE_MS))`，常量 2000ms
+- 宽限期间没有 `onChange` 订阅（订阅在首次注册之后），所以并发 register 只更新 registry，不触发任何 PUT
+- 宽限结束 → snapshot `currentWorkspaces()` → 注册 → 挂 `onChange` → 之后按 §29 行为
+
+**测试。** 这段是 daemon entry 的编排，难单测；改动只有两行（一个 setTimeout + 一个常量）。手动验证：kill daemon 重启 → 1-2 秒内打开 mobile Discord `/use` → 仍能看到刚才那批 workspace。
+
+bump 0.0.27 → 0.0.28。
