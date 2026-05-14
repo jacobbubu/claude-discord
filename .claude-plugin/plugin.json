@@ -1,7 +1,7 @@
 {
   "name": "claude-discord",
   "description": "Discord channel for Claude Code \u2014 multi-workspace gateway daemon variant. Single bot routes to N CC workspaces with channel-as-slot binding (`/use <workspace>`).",
-  "version": "0.0.27",
+  "version": "0.0.28",
   "keywords": [
     "discord",
     "messaging",

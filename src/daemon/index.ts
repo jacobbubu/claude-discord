@@ -141,9 +141,22 @@ export async function runDaemon(): Promise<void> {
     // workspace at the top of the /use dropdown, and >25 sets surface what
     // matters within the Discord choices cap.
     const currentWorkspaces = (): string[] => listWorkspacesByActivity(registry.list())
+    // §30: small grace after clientReady so plugin processes that were
+    // already running can reconnect + re-register *before* we publish the
+    // first slash command set. Without this, the first PUT often has empty
+    // choices (no plugin re-registered yet) — the debounced onChange catches
+    // up in ~1s, but a mobile user who opens /use in that window sees an
+    // empty dropdown until they refresh.
+    const STARTUP_GRACE_MS = 2_000
+
     gateway.client.once('clientReady', async () => {
       const token = process.env.DISCORD_BOT_TOKEN
       if (!token) return
+
+      // Note: registry.onChange isn't subscribed yet, so any plugin that
+      // registers during this window just updates the registry — no PUT
+      // is triggered. The post-grace snapshot below picks them up.
+      await new Promise(r => setTimeout(r, STARTUP_GRACE_MS))
 
       let lastRegistered = currentWorkspaces()
       await registerSlashCommands(gateway.client, token, undefined, () => lastRegistered).catch(e =>
