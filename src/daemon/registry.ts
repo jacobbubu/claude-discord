@@ -22,6 +22,10 @@ const CAP_MIN = 10
 const CAP_MAX = 500
 
 export type EvictionListener = (workspace: string) => void
+/** Architecture deltas §29: fires after any registry mutation (register /
+ *  unregister / eviction). Used by daemon to re-register slash commands when
+ *  the workspace set changes (static choices need to refresh). */
+export type ChangeListener = () => void
 
 function readEnvInt(name: string, fallback: number, min: number, max: number): number {
   const raw = process.env[name]
@@ -39,6 +43,7 @@ export class WorkspaceRegistry {
   private readonly cap: number
   private readonly trim: number
   private readonly listeners: EvictionListener[] = []
+  private readonly changeListeners: ChangeListener[] = []
 
   constructor(opts: { cap?: number; trim?: number } = {}) {
     this.cap = opts.cap ?? readEnvInt('CLAUDE_DISCORD_WORKSPACE_CAP', DEFAULT_CAP, CAP_MIN, CAP_MAX)
@@ -58,22 +63,52 @@ export class WorkspaceRegistry {
     this.listeners.push(fn)
   }
 
+  /**
+   * Architecture deltas §29: subscribe to any membership change (register /
+   * unregister / eviction). Returns an unsubscribe function. Listener errors
+   * are swallowed so one bad listener can't break the others.
+   */
+  onChange(fn: ChangeListener): () => void {
+    this.changeListeners.push(fn)
+    return () => {
+      const i = this.changeListeners.indexOf(fn)
+      if (i >= 0) this.changeListeners.splice(i, 1)
+    }
+  }
+
+  private notifyChange(): void {
+    for (const fn of this.changeListeners) {
+      try {
+        fn()
+      } catch (e) {
+        log.warn(`change listener error: ${e}`)
+      }
+    }
+  }
+
   register(name: string, conn: Connection): void {
     // Replace any existing entry for the same name (re-registration after reconnect).
     const prev = this.byName.get(name)
+    const wasNewName = prev === undefined
     if (prev && prev !== conn) prev.close()
     this.byName.set(name, conn)
-    if (this.byName.size > this.cap) this.evictTo(this.trim)
+    if (this.byName.size > this.cap) this.evictTo(this.trim) // notifyChange happens inside if it evicted
+    // Only notify on actual membership change — reconnect re-registering the
+    // same name with the same conn shouldn't churn slash registration.
+    if (wasNewName || prev !== conn) this.notifyChange()
   }
 
   unregister(name: string): void {
-    this.byName.delete(name)
+    if (this.byName.delete(name)) this.notifyChange()
   }
 
   unregisterByConnection(conn: Connection): void {
     if (!conn.workspace) return
     const cur = this.byName.get(conn.workspace)
-    if (cur === conn) this.byName.delete(conn.workspace)
+    if (cur === conn) {
+      this.byName.delete(conn.workspace)
+      this.notifyChange()
+    }
   }
 
   get(name: string): Connection | undefined {
@@ -126,5 +161,6 @@ export class WorkspaceRegistry {
       }
       conn.close()
     }
+    if (toEvict.length > 0) this.notifyChange()
   }
 }

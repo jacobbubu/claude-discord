@@ -7,7 +7,12 @@
 
 import { Routes } from 'discord.js'
 import { describe, expect, it, vi } from 'vitest'
-import { buildCommandList, registerSlashCommands } from '../slash-commands.ts'
+import {
+  buildCommandList,
+  listWorkspacesByActivity,
+  registerSlashCommands,
+  workspaceListChanged,
+} from '../slash-commands.ts'
 
 type PutCall = { route: string; body: unknown }
 
@@ -70,5 +75,108 @@ describe('registerSlashCommands (#71: global-only)', () => {
     } as unknown as Pick<import('discord.js').REST, 'put'>
     await registerSlashCommands(makeFakeClient('app1', ['g1']), 'tok', rest)
     expect(calls).toEqual([{ route: Routes.applicationGuildCommands('app1', 'g1'), body: [] }])
+  })
+
+  it('§29: passes the current workspace list into buildCommandList via getWorkspaces', async () => {
+    const { rest, calls } = makeFakeRest()
+    await registerSlashCommands(makeFakeClient('app1', []), 'tok', rest, () => ['foo', 'bar'])
+    const globalBody = calls.find(c => c.route === Routes.applicationCommands('app1'))?.body as
+      | Array<{ name: string; options?: Array<{ name: string; choices?: Array<{ value: string }> }> }>
+      | undefined
+    const use = globalBody?.find(c => c.name === 'use')
+    const wsOpt = use?.options?.find(o => o.name === 'workspace')
+    expect(wsOpt?.choices?.map(c => c.value).sort()).toEqual(['bar', 'foo'])
+  })
+})
+
+describe('buildCommandList — static choices (§29)', () => {
+  type CmdBody = { name: string; options?: Array<{ name: string; choices?: Array<{ name: string; value: string }> }> }
+  const useOption = (cmds: unknown[]) => {
+    const list = cmds as CmdBody[]
+    const use = list.find(c => c.name === 'use')!
+    return use.options!.find(o => o.name === 'workspace')!
+  }
+  const statusOption = (cmds: unknown[]) => {
+    const list = cmds as CmdBody[]
+    const status = list.find(c => c.name === 'status')!
+    return status.options!.find(o => o.name === 'workspace')!
+  }
+
+  it('no workspaces → option has no choices (plain string fallback)', () => {
+    const cmds = buildCommandList([])
+    expect(useOption(cmds).choices).toBeUndefined()
+    expect(statusOption(cmds).choices).toBeUndefined()
+  })
+
+  it('with workspaces → option carries name=value pairs', () => {
+    const cmds = buildCommandList(['alpha', 'beta'])
+    expect(useOption(cmds).choices).toEqual([
+      { name: 'alpha', value: 'alpha' },
+      { name: 'beta', value: 'beta' },
+    ])
+    expect(statusOption(cmds).choices).toEqual([
+      { name: 'alpha', value: 'alpha' },
+      { name: 'beta', value: 'beta' },
+    ])
+  })
+
+  it('clamps to 25 (Discord choices cap)', () => {
+    const many = Array.from({ length: 30 }, (_, i) => `ws-${i}`)
+    expect(useOption(buildCommandList(many)).choices?.length).toBe(25)
+  })
+})
+
+describe('listWorkspacesByActivity (§29)', () => {
+  it('returns empty for empty input', () => {
+    expect(listWorkspacesByActivity([])).toEqual([])
+  })
+
+  it('orders most-recently-active first (descending lastActivityTs)', () => {
+    expect(
+      listWorkspacesByActivity([
+        { workspace: 'old', lastActivityTs: 100 },
+        { workspace: 'fresh', lastActivityTs: 300 },
+        { workspace: 'mid', lastActivityTs: 200 },
+      ]),
+    ).toEqual(['fresh', 'mid', 'old'])
+  })
+
+  it('skips entries whose workspace name is null', () => {
+    expect(
+      listWorkspacesByActivity([
+        { workspace: null, lastActivityTs: 999 },
+        { workspace: 'foo', lastActivityTs: 1 },
+      ]),
+    ).toEqual(['foo'])
+  })
+
+  it('does not mutate the input array', () => {
+    const input = [
+      { workspace: 'a', lastActivityTs: 1 },
+      { workspace: 'b', lastActivityTs: 2 },
+    ]
+    const snapshot = input.map(c => c.workspace)
+    listWorkspacesByActivity(input)
+    expect(input.map(c => c.workspace)).toEqual(snapshot)
+  })
+})
+
+describe('workspaceListChanged (§29)', () => {
+  it('returns false for identical lists', () => {
+    expect(workspaceListChanged(['a', 'b'], ['a', 'b'])).toBe(false)
+  })
+
+  it('returns false when order differs but membership is the same', () => {
+    expect(workspaceListChanged(['a', 'b'], ['b', 'a'])).toBe(false)
+  })
+
+  it('returns true when membership differs', () => {
+    expect(workspaceListChanged(['a'], ['a', 'b'])).toBe(true)
+    expect(workspaceListChanged(['a', 'b'], ['a', 'c'])).toBe(true)
+  })
+
+  it('returns false for two empty lists; true for empty vs non-empty', () => {
+    expect(workspaceListChanged([], [])).toBe(false)
+    expect(workspaceListChanged([], ['a'])).toBe(true)
   })
 })
