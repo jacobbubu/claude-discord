@@ -19,6 +19,10 @@ export type Paths = {
   socketPath: string
   outLog: string
   errLog: string
+  /** Daemon-owned rotating log file (§31). Rotated copies live at
+   *  `daemonLog.1`..`daemonLog.<keep>`. Coexists with outLog/errLog (which
+   *  the install plist still writes to on launchd/systemd). */
+  daemonLog: string
 }
 
 export function resolvePaths(env: NodeJS.ProcessEnv = process.env): Paths {
@@ -33,5 +37,6 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env): Paths {
     socketPath: join(stateDir, 'daemon.sock'),
     outLog: join(stateDir, 'daemon.out.log'),
     errLog: join(stateDir, 'daemon.err.log'),
+    daemonLog: join(stateDir, 'daemon.log'),
   }
 }

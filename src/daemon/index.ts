@@ -11,7 +11,7 @@
 import { chmodSync, existsSync, mkdirSync } from 'node:fs'
 import { ChannelType } from 'discord.js'
 import { initStateDir } from '../shared/init-state-dir.ts'
-import { log } from '../shared/logger.ts'
+import { attachFileSink, log } from '../shared/logger.ts'
 import { resolvePaths } from '../shared/paths.ts'
 import { startApprovalWatcher } from './approval-watcher.ts'
 import { startDiscordGateway } from './discord-gateway.ts'
@@ -40,6 +40,11 @@ export async function runDaemon(): Promise<void> {
   const paths = resolvePaths()
   initStateDir(paths)
   mkdirSync(paths.approvedDir, { recursive: true, mode: 0o700 })
+
+  // Deltas §31: daemon owns its log file with size-based rotation, so log
+  // growth is bounded regardless of how the launcher redirects stdout/stderr.
+  // Stderr still mirrors everything for foreground / nohup-redirected runs.
+  attachFileSink({ path: paths.daemonLog })
 
   if (existsSync(paths.envFile)) {
     try {

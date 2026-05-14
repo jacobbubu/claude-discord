@@ -26,6 +26,7 @@ beforeEach(() => {
     socketPath: join(stateDir, 'daemon.sock'),
     outLog: join(stateDir, 'daemon.out.log'),
     errLog: join(stateDir, 'daemon.err.log'),
+    daemonLog: join(stateDir, 'daemon.log'),
   }
   server = startSocketServer(paths, registry)
 })

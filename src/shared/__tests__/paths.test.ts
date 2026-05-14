@@ -23,4 +23,11 @@ describe('resolvePaths', () => {
     const paths = resolvePaths({ CLAUDE_DISCORD_STATE_DIR: '/tmp/x' } as NodeJS.ProcessEnv)
     expect(paths.socketPath.startsWith(paths.stateDir + '/')).toBe(true)
   })
+
+  it('exposes the daemon-owned rotating log path (§31) alongside the legacy out/err logs', () => {
+    const paths = resolvePaths({ CLAUDE_DISCORD_STATE_DIR: '/tmp/x' } as NodeJS.ProcessEnv)
+    expect(paths.daemonLog).toBe('/tmp/x/daemon.log')
+    expect(paths.outLog).toBe('/tmp/x/daemon.out.log')
+    expect(paths.errLog).toBe('/tmp/x/daemon.err.log')
+  })
 })
