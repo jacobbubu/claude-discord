@@ -1850,3 +1850,26 @@ bump 0.0.26 → 0.0.27。
 **测试。** 这段是 daemon entry 的编排，难单测；改动只有两行（一个 setTimeout + 一个常量）。手动验证：kill daemon 重启 → 1-2 秒内打开 mobile Discord `/use` → 仍能看到刚才那批 workspace。
 
 bump 0.0.27 → 0.0.28。
+
+### 31. daemon 自持日志文件 + size-based 轮转
+
+**问题（#85）。** `logger.ts` 全走 `process.stderr.write`，daemon 进程不持有日志文件 FD。`nohup bun run ... >> daemon.log` 是 shell 的 redirect，daemon 内部 `rename` 没用（shell 的 append FD 仍指向旧 inode）。日志无限增长，长期跑会撑爆磁盘。
+
+**设计。** daemon 自己 open 一个 append FD，每次 `log.*` 同时写它；写完看大小，超阈值就在进程内做 size-based rotate。stderr 写法保留（前台调试 / nohup redirect 仍可见）。
+
+**实施单元。**
+- `src/shared/paths.ts` 加 `daemonLog: join(stateDir, 'daemon.log')`。原有 `outLog`/`errLog`（launchd plist 用）保留向后兼容。
+- `src/shared/logger.ts` 重构为多 writer：内部 `writers: ((line: string) => void)[]`，默认只有 stderr writer。新增 `attachFileSink({ path, maxBytes = 10*1024*1024, keep = 4 }): { detach(): void }`：用 `openSync(path,'a')` 持 FD；每次 `log.*` 后通过 writer 数组同步 `writeSync(fd, line)`，写完 `fstatSync(fd)` 检查 size；超 `maxBytes` 触发 `rotate()` —— `closeSync(fd)` → 从 `.${keep-1}` 一路 `renameSync` 到 `.${keep}`（最老的被覆盖丢弃）、`current → .1` → `openSync` 新 FD。`detach` 移除 writer + 关 FD。
+- `src/daemon/index.ts` 在 `initStateDir` 之后立即 `attachFileSink({ path: paths.daemonLog, ... })`。daemon 退出时不主动 detach（进程退出会自动关 FD）。
+- `src/cli/logs.ts` 优先看 `paths.daemonLog`（含 `.1..4` rotated）；没有再 fall back 老的 `outLog`/`errLog`。
+- 不动 install.ts / launchd plist 生成（让 daemon 自己的 rotate 跟 launchd 的 `StandardOutPath` 并存即可，后者保持原状）。
+
+**测试（vitest tmp 目录）。**
+- `attachFileSink` 把 log 行写入指定文件
+- 写够 `maxBytes` 触发一次 rotate：原文件变 `.1`、新文件出现、内容分开
+- 多次触发：累计 rotation 不超过 `keep` 份（最老的被丢）
+- `detach()` 之后再 log 不写文件、原 FD 关闭
+
+**已知非干净点（写进 PR 描述）。** 本 session 里手动启动 daemon 用了 `nohup ... >> daemon.log` redirect，新 daemon 也会打开同一个 `daemon.log` 持 FD。`O_APPEND` 内核保证不撕裂、但同一行会落两遍。第一次 rotate 后 shell FD 指着改名后的 `.1`、daemon 写新文件，之后两边分离。后续重启 daemon 时把 `>> daemon.log` 去掉就干净。
+
+bump 0.0.28 → 0.0.29。
