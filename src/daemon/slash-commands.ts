@@ -53,19 +53,30 @@ export type SlashDeps = {
   buttonIntercept?: (i: import('discord.js').ButtonInteraction) => Promise<boolean>
 }
 
-export function buildCommandList() {
+/**
+ * Architecture deltas §29: Discord caps slash-command choices at 25 per option;
+ * we clamp to be safe. When no workspaces are online we fall back to a plain
+ * string option (no choices, no autocomplete — there's nothing useful to suggest).
+ */
+const CHOICES_MAX = 25
+
+function workspaceChoices(workspaces: string[]): Array<{ name: string; value: string }> {
+  return workspaces.slice(0, CHOICES_MAX).map(w => ({ name: w, value: w }))
+}
+
+export function buildCommandList(workspaces: string[] = []) {
+  const choices = workspaceChoices(workspaces)
+  const hasChoices = choices.length > 0
   return [
     new SlashCommandBuilder()
       .setName('use')
       .setDescription('Switch this channel to a workspace')
       .setContexts(...ALL_CONTEXTS)
-      .addStringOption(o =>
-        o
-          .setName('workspace')
-          .setDescription('Workspace name')
-          .setRequired(true)
-          .setAutocomplete(true),
-      ),
+      .addStringOption(o => {
+        o.setName('workspace').setDescription('Workspace name').setRequired(true)
+        if (hasChoices) o.addChoices(...choices)
+        return o
+      }),
     new SlashCommandBuilder()
       .setName('last')
       .setDescription('Switch back to previous workspace')
@@ -93,27 +104,58 @@ export function buildCommandList() {
       .setName('status')
       .setDescription('Show online status of a workspace (default: this channel\'s binding)')
       .setContexts(...ALL_CONTEXTS)
-      .addStringOption(o =>
-        o
-          .setName('workspace')
+      .addStringOption(o => {
+        o.setName('workspace')
           .setDescription('Workspace name (default: current channel binding)')
           .setRequired(false)
-          .setAutocomplete(true),
-      ),
+        if (hasChoices) o.addChoices(...choices)
+        return o
+      }),
   ].map(c => c.toJSON())
+}
+
+/**
+ * Architecture deltas §29: turn a list of connections into a workspace-name
+ * list ordered by most-recent activity first. Used for /use `choices` so the
+ * most relevant workspaces surface at the top of the mobile dropdown (and
+ * stay in scope when membership exceeds the 25-cap). Structural input shape
+ * keeps it independent of the real Connection class for unit-testability.
+ */
+export function listWorkspacesByActivity<T extends { workspace: string | null; lastActivityTs: number }>(
+  conns: readonly T[],
+): string[] {
+  return [...conns]
+    .filter(c => c.workspace != null)
+    .sort((a, b) => b.lastActivityTs - a.lastActivityTs)
+    .map(c => c.workspace as string)
+}
+
+/**
+ * Architecture deltas §29: order-independent compare of two workspace lists.
+ * Used by the daemon to skip a slash re-register when the membership change
+ * didn't actually alter the set (e.g. a quick reconnect of the same workspace).
+ * Pure for unit-testability.
+ */
+export function workspaceListChanged(prev: string[], curr: string[]): boolean {
+  if (prev.length !== curr.length) return true
+  const a = [...prev].sort()
+  const b = [...curr].sort()
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return true
+  return false
 }
 
 export async function registerSlashCommands(
   client: Client,
   token: string,
   rest: Pick<REST, 'put'> = new REST({ version: '10' }).setToken(token),
+  getWorkspaces: () => string[] = () => [],
 ): Promise<void> {
   const appId = client.application?.id
   if (!appId) {
     log.warn('slash: client.application.id unavailable; skipping registration')
     return
   }
-  const commands = buildCommandList()
+  const commands = buildCommandList(getWorkspaces())
 
   // We register GLOBALLY only. Global commands work in bot DMs (the contexts
   // list includes BotDM/PrivateChannel) and in every guild. Discord

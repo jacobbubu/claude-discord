@@ -22,7 +22,9 @@ import { RingBufferMap } from './ring-buffer.ts'
 import { RoutingTable } from './routing.ts'
 import {
   attachInteractionHandler,
+  listWorkspacesByActivity,
   registerSlashCommands,
+  workspaceListChanged,
 } from './slash-commands.ts'
 import {
   startSocketServer,
@@ -135,13 +137,37 @@ export async function runDaemon(): Promise<void> {
 
     // Register slash commands once the bot is ready (needs guild list).
     // 'clientReady' is the v15-forward name for what was 'ready' in v14.
+    // §29: most-recently-active first — so mobile users see their relevant
+    // workspace at the top of the /use dropdown, and >25 sets surface what
+    // matters within the Discord choices cap.
+    const currentWorkspaces = (): string[] => listWorkspacesByActivity(registry.list())
     gateway.client.once('clientReady', async () => {
       const token = process.env.DISCORD_BOT_TOKEN
-      if (token) {
-        await registerSlashCommands(gateway.client, token).catch(e =>
-          log.warn(`slash registration failed: ${e}`),
-        )
-      }
+      if (!token) return
+
+      let lastRegistered = currentWorkspaces()
+      await registerSlashCommands(gateway.client, token, undefined, () => lastRegistered).catch(e =>
+        log.warn(`slash registration failed: ${e}`),
+      )
+
+      // Architecture deltas §29: re-register slash commands when the workspace
+      // set changes, so /use's static choices stay live. Debounce a flurry of
+      // (un)registers; only PUT when the membership actually changed.
+      let debounceTimer: ReturnType<typeof setTimeout> | null = null
+      registry.onChange(() => {
+        if (debounceTimer) return
+        debounceTimer = setTimeout(() => {
+          debounceTimer = null
+          const curr = currentWorkspaces()
+          if (!workspaceListChanged(lastRegistered, curr)) return
+          lastRegistered = curr
+          log.info(`slash: workspaces changed (now ${curr.length}) — re-registering`)
+          void registerSlashCommands(gateway.client, token, undefined, () => curr).catch(e =>
+            log.warn(`slash re-registration failed: ${e}`),
+          )
+        }, 500)
+        debounceTimer.unref?.()
+      })
     })
   } else {
     log.warn(

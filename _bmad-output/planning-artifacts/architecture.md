@@ -1813,3 +1813,26 @@ bump 0.0.24 → 0.0.25。
 **测试。** ppid 不变 → 不触发；ppid 变（父死→reparent）→ 触发一次；`stop()` 后不再触发；`stop()` 幂等。用 vitest fake timers。
 
 bump 0.0.25 → 0.0.26。
+
+### 29. `/use` `/status` 改用静态 choices —— Discord mobile 友好
+
+**问题。** Discord mobile 客户端键盘无 Tab 键，slash 命令的 autocomplete（输入触发的 suggestion 列表）很难自然触发 —— 用户得 tap 参数 chip、开始打字、再 tap 建议。改用 **静态 choices**（参数固定下拉列表）后，mobile 上点开参数就直接出下拉，一 tap 选定，跟 PC 上的体验一致。
+
+**代价。** choices 是注册时固化的，workspace 上下线时 daemon 必须**重新注册** slash 命令；Discord 全局命令注册有速率限制（每个 app 每天 ~200 次），还有传播延迟（修订后一般几秒到几分钟内 mobile/desktop 客户端收到）。choices 上限 **25 个**（够用）。
+
+**改动。**
+
+- `buildCommandList(workspaces: string[])` —— `/use` `/status` 的 `workspace` 参数在 `workspaces.length > 0` 时用 `.addChoices(...)`（取前 25）；否则退到普通 string 参数（无 choices、无 autocomplete，因为本来也没东西可选）。`setAutocomplete(true)` 删除。
+- `registerSlashCommands(client, token, rest?, getWorkspaces?: () => string[])` —— 新增可选 `getWorkspaces` 回调；每次注册时拉当前列表传给 `buildCommandList`。老调用者不传 = 空列表 = 老行为（无 choices）。
+- `WorkspaceRegistry.onChange(fn): () => void` —— register / unregister / unregisterByConnection / 容量驱动 eviction 后触发，返回取消订阅函数。
+- `daemon/index.ts` —— `clientReady` 之后首注册；订阅 `registry.onChange`，以 500ms 防抖触发"重算 workspace 列表，若与上次注册的不同则再 PUT 一次"。Helper `workspaceListChanged(prev, curr)` 为纯函数便于单测。
+- `attachInteractionHandler` 中的 autocomplete 分支保留为空响应（兜底；choices 模式下 Discord 不会触发，但偶尔可能在传播间隙收到旧 client 的 autocomplete 请求）。
+
+**风险。**
+
+- 注册速率限制：debounce 500ms + 仅在列表实际改变时才重注册，覆盖一般的 register/unregister 抖动；极端的高频上下线场景理论可能触发限流，daemon 会 log.warn 但不中断。
+- 命令传播延迟：刚启动的 CC 不会立刻出现在 mobile 客户端的 /use 下拉里；mobile 客户端打开 slash 菜单时通常会重新拉一次，几秒内可见。
+
+**测试。** `buildCommandList([])` workspace 参数无 choices；`buildCommandList(['foo','bar'])` 有 2 项 choices；26 个 workspace 只保留前 25；`workspaceListChanged` 顺序无关比较；`WorkspaceRegistry.onChange` 在 register/unregister/eviction 后触发，返回的 unsubscribe 能停。
+
+bump 0.0.26 → 0.0.27。
