@@ -24,6 +24,7 @@ import type { DiscordGateway } from './discord-gateway.ts'
 import type { WorkspaceRegistry } from './registry.ts'
 import type { RingBufferMap } from './ring-buffer.ts'
 import type { RoutingTable } from './routing.ts'
+import type { TypingHeartbeat } from './typing-heartbeat.ts'
 
 export type InboundRouterDeps = {
   accessFile: string
@@ -39,6 +40,13 @@ export type InboundRouterDeps = {
    * allowFrom before claiming the message.
    */
   permissionTextIntercept?: (senderId: string, text: string) => boolean
+  /**
+   * §33: when provided, the router starts a typing-indicator heartbeat for
+   * the source channel on each inbound. Tool handlers stop it when CC replies.
+   * Backward compat: when omitted, falls back to a single sendTyping() (old
+   * behavior — Discord auto-decays the dot after ~10s).
+   */
+  typingHeartbeat?: TypingHeartbeat
 }
 
 export function makeInboundHandler(deps: InboundRouterDeps): (msg: Message) => void {
@@ -140,9 +148,13 @@ async function handle(deps: InboundRouterDeps, msg: Message): Promise<void> {
   conn.lastInboundPreview = msg.content.slice(0, 40)
   conn.activeTraceThreadId = null
 
-  // UX: tell the user we're processing. Discord shows "claude is typing…"
-  // for ~10s, usually enough to cover Claude's first-token latency.
-  if ('sendTyping' in msg.channel) {
+  // UX: tell the user we're processing. §33: when a TypingHeartbeat is
+  // wired, keep the indicator alive across the whole CC turn (re-typing
+  // every ~8s) so long tasks don't look hung — stopped by reply/edit/thread
+  // tool handlers. Without one, fall back to a single sendTyping (~10s decay).
+  if (deps.typingHeartbeat) {
+    deps.typingHeartbeat.start(msg.channelId, conn.workspace ?? undefined)
+  } else if ('sendTyping' in msg.channel) {
     void (msg.channel as { sendTyping: () => Promise<void> })
       .sendTyping()
       .catch(() => {})

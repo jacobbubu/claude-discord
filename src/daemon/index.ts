@@ -35,6 +35,7 @@ import {
 } from './socket-server.ts'
 import { dispatchToolCall, type ToolContext } from './tool-handlers.ts'
 import { ToolTraceRelay } from './tool-trace.ts'
+import { TypingHeartbeat } from './typing-heartbeat.ts'
 
 export async function runDaemon(): Promise<void> {
   const paths = resolvePaths()
@@ -63,10 +64,38 @@ export async function runDaemon(): Promise<void> {
 
   const gateway = await startDiscordGateway(paths)
 
+  // §33: keep the "claude is typing…" dot alive between inbound and reply,
+  // re-typing every ~8s so long CC tasks don't look hung. Started by
+  // inbound-router on each inbound; stopped by reply/edit/thread tool handlers.
+  const typingHeartbeat = gateway
+    ? new TypingHeartbeat(async chatId => {
+        try {
+          const ch = await gateway.client.channels.fetch(chatId)
+          if (ch && 'sendTyping' in ch) {
+            await (ch as { sendTyping: () => Promise<void> }).sendTyping()
+          }
+        } catch {
+          /* best-effort */
+        }
+      })
+    : null
+
+  // §33: plugin disconnects / cap-evictions clear that workspace's typing
+  // dots instead of waiting for the 5min safety cap.
+  if (typingHeartbeat) {
+    registry.onWorkspaceRemoved(name => typingHeartbeat.stopByWorkspace(name))
+  }
+
   // Build the real tool dispatcher (or echo fallback if gateway absent).
   const toolDispatcher: ToolCallHandler = gateway
     ? async (workspace, tool, args) => {
-        const ctx: ToolContext = { gateway, ringBuffers, paths, workspace }
+        const ctx: ToolContext = {
+          gateway,
+          ringBuffers,
+          paths,
+          workspace,
+          typingHeartbeat: typingHeartbeat ?? undefined,
+        }
         return await dispatchToolCall(ctx, tool, args)
       }
     : async () => ({ ok: false, error: 'discord gateway not running' })
@@ -119,6 +148,7 @@ export async function runDaemon(): Promise<void> {
       permissionTextIntercept: permissionRelay
         ? (senderId, text) => permissionRelay.handleTextResponse(senderId, text)
         : undefined,
+      typingHeartbeat: typingHeartbeat ?? undefined,
     })
     gateway.client.on('messageCreate', msg => {
       if (msg.author.bot) return
@@ -216,6 +246,7 @@ export async function runDaemon(): Promise<void> {
     log.info(`received ${signal}, shutting down`)
     approvalWatcher.stop()
     permissionRelay?.stop()
+    typingHeartbeat?.stopAll()
     routing.stopWatching()
     void sockServer
       .close()

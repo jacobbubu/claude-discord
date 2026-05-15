@@ -15,6 +15,7 @@ import { writeAccessFile } from '../access-control.ts'
 import type { DiscordGateway } from '../discord-gateway.ts'
 import { RingBufferMap } from '../ring-buffer.ts'
 import { dispatchToolCall, validateEmbed, type ToolContext, type ToolOutcome } from '../tool-handlers.ts'
+import { TypingHeartbeat } from '../typing-heartbeat.ts'
 
 // Narrowing helpers — `expect(r.ok).toBe(false)` doesn't propagate to TS,
 // so we throw and narrow manually before reading discriminated-union fields.
@@ -556,6 +557,89 @@ describe('tool-handlers', () => {
       // No embeds field smuggled in
       const opts = sendCalls[0]![0] as { embeds?: unknown[] }
       expect(opts.embeds).toBeUndefined()
+    })
+  })
+
+  describe('reply (§33: typing heartbeat stop)', () => {
+    function withHeartbeat() {
+      const send = vi.fn()
+      const hb = new TypingHeartbeat(send, { intervalMs: 1_000, maxMs: 60_000 })
+      ctx = { ...ctx, typingHeartbeat: hb }
+      return { send, hb }
+    }
+
+    it('stops typing on successful reply', async () => {
+      const { hb } = withHeartbeat()
+      mockDmChannel({})
+      hb.start('dm-u-1', 'foo')
+      expect(hb.activeCount).toBe(1)
+      const r = await dispatchToolCall(ctx, 'reply', { chat_id: 'dm-u-1', text: 'hi' })
+      expectOk(r)
+      expect(hb.activeCount).toBe(0)
+    })
+
+    it('stops typing when reply send throws (not only on success)', async () => {
+      const { hb } = withHeartbeat()
+      const chatId = 'dm-u-1'
+      const channel = {
+        id: chatId,
+        type: ChannelType.DM,
+        isTextBased: () => true,
+        isThread: () => false,
+        recipientId: 'u-1',
+        send: vi.fn().mockRejectedValue(new Error('discord 500')),
+      }
+      ;(gateway.client.channels as unknown as { fetch: ReturnType<typeof vi.fn> }).fetch =
+        vi.fn().mockResolvedValue(channel)
+
+      hb.start(chatId, 'foo')
+      expect(hb.activeCount).toBe(1)
+      const r = await dispatchToolCall(ctx, 'reply', { chat_id: chatId, text: 'hi' })
+      expectFail(r)
+      expect(hb.activeCount).toBe(0)
+    })
+
+    it('stops typing on edit_message success', async () => {
+      const { hb } = withHeartbeat()
+      const m = makeMockMessage({ id: 'm-1', authorId: 'u-bot' })
+      mockDmChannel({ messages: [m] })
+      hb.start('dm-u-1', 'foo')
+      const r = await dispatchToolCall(ctx, 'edit_message', {
+        chat_id: 'dm-u-1',
+        message_id: 'm-1',
+        text: 'new',
+      })
+      expectOk(r)
+      expect(hb.activeCount).toBe(0)
+    })
+
+    it('stops typing on edit_message failure (message not found)', async () => {
+      const { hb } = withHeartbeat()
+      mockDmChannel({}) // no messages — fetch will throw
+      hb.start('dm-u-1', 'foo')
+      const r = await dispatchToolCall(ctx, 'edit_message', {
+        chat_id: 'dm-u-1',
+        message_id: 'ghost',
+        text: 'x',
+      })
+      expectFail(r)
+      expect(hb.activeCount).toBe(0)
+    })
+
+    it('react does NOT stop typing (not a real reply)', async () => {
+      const { hb } = withHeartbeat()
+      const m = makeMockMessage({ id: 'm-1', authorId: 'u-bot' })
+      mockDmChannel({ messages: [m] })
+      hb.start('dm-u-1', 'foo')
+      const r = await dispatchToolCall(ctx, 'react', {
+        chat_id: 'dm-u-1',
+        message_id: 'm-1',
+        emoji: '👀',
+      })
+      expectOk(r)
+      // still ticking — react is an ack, not a reply
+      expect(hb.activeCount).toBe(1)
+      hb.stopAll() // cleanup
     })
   })
 

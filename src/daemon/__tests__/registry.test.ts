@@ -126,4 +126,68 @@ describe('WorkspaceRegistry', () => {
       expect(fn).toHaveBeenCalledTimes(2)
     })
   })
+
+  describe('onWorkspaceRemoved (§33)', () => {
+    it('fires with the workspace name on unregister', () => {
+      const r = new WorkspaceRegistry()
+      const fn = vi.fn()
+      r.onWorkspaceRemoved(fn)
+      const a = newConn(); a.workspace = 'a'
+      r.register('a', a)
+      r.unregister('a')
+      expect(fn).toHaveBeenCalledTimes(1)
+      expect(fn).toHaveBeenCalledWith('a')
+    })
+
+    it('fires on unregisterByConnection', () => {
+      const r = new WorkspaceRegistry()
+      const fn = vi.fn()
+      r.onWorkspaceRemoved(fn)
+      const a = newConn(); a.workspace = 'a'
+      r.register('a', a)
+      r.unregisterByConnection(a)
+      expect(fn).toHaveBeenCalledTimes(1)
+      expect(fn).toHaveBeenCalledWith('a')
+    })
+
+    it('fires once per evicted workspace on cap-driven eviction', () => {
+      // cap=2, trim=1 → adding the 3rd entry trims down to 1; both 'a' and 'b'
+      // are dropped (oldest-first) to reach the target, so the listener fires
+      // twice.
+      const r = new WorkspaceRegistry({ cap: 2, trim: 1 })
+      const fn = vi.fn()
+      const a = newConn(); a.workspace = 'a'; a.lastActivityTs = 1
+      const b = newConn(); b.workspace = 'b'; b.lastActivityTs = 2
+      r.register('a', a)
+      r.register('b', b)
+      r.onWorkspaceRemoved(fn)
+      const c = newConn(); c.workspace = 'c'; c.lastActivityTs = 3
+      r.register('c', c)
+      expect(fn).toHaveBeenCalledTimes(2)
+      expect(fn).toHaveBeenCalledWith('a')
+      expect(fn).toHaveBeenCalledWith('b')
+    })
+
+    it('does not fire when unregistering a non-existent name', () => {
+      const r = new WorkspaceRegistry()
+      const fn = vi.fn()
+      r.onWorkspaceRemoved(fn)
+      r.unregister('ghost')
+      expect(fn).not.toHaveBeenCalled()
+    })
+
+    it('returns an unsubscribe function that stops further callbacks', () => {
+      const r = new WorkspaceRegistry()
+      const fn = vi.fn()
+      const off = r.onWorkspaceRemoved(fn)
+      const a = newConn(); a.workspace = 'a'
+      r.register('a', a)
+      r.unregister('a')
+      expect(fn).toHaveBeenCalledTimes(1)
+      off()
+      r.register('a', a)
+      r.unregister('a')
+      expect(fn).toHaveBeenCalledTimes(1)
+    })
+  })
 })
