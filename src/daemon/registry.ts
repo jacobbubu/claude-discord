@@ -26,6 +26,10 @@ export type EvictionListener = (workspace: string) => void
  *  unregister / eviction). Used by daemon to re-register slash commands when
  *  the workspace set changes (static choices need to refresh). */
 export type ChangeListener = () => void
+/** Architecture deltas §33: fires when a workspace is removed (unregister /
+ *  unregisterByConnection / eviction). Used by daemon to drop the typing
+ *  heartbeat tied to a plugin that just went away. */
+export type RemovedListener = (workspace: string) => void
 
 function readEnvInt(name: string, fallback: number, min: number, max: number): number {
   const raw = process.env[name]
@@ -44,6 +48,7 @@ export class WorkspaceRegistry {
   private readonly trim: number
   private readonly listeners: EvictionListener[] = []
   private readonly changeListeners: ChangeListener[] = []
+  private readonly removedListeners: RemovedListener[] = []
 
   constructor(opts: { cap?: number; trim?: number } = {}) {
     this.cap = opts.cap ?? readEnvInt('CLAUDE_DISCORD_WORKSPACE_CAP', DEFAULT_CAP, CAP_MIN, CAP_MAX)
@@ -86,6 +91,30 @@ export class WorkspaceRegistry {
     }
   }
 
+  /**
+   * Architecture deltas §33: subscribe to workspace-removed events
+   * (unregister / unregisterByConnection / cap eviction). Returns an
+   * unsubscribe function. Use for cleanup tied to a specific workspace going
+   * away — e.g. dropping its typing heartbeat.
+   */
+  onWorkspaceRemoved(fn: RemovedListener): () => void {
+    this.removedListeners.push(fn)
+    return () => {
+      const i = this.removedListeners.indexOf(fn)
+      if (i >= 0) this.removedListeners.splice(i, 1)
+    }
+  }
+
+  private notifyRemoved(workspace: string): void {
+    for (const fn of this.removedListeners) {
+      try {
+        fn(workspace)
+      } catch (e) {
+        log.warn(`workspace-removed listener error: ${e}`)
+      }
+    }
+  }
+
   register(name: string, conn: Connection): void {
     // Replace any existing entry for the same name (re-registration after reconnect).
     const prev = this.byName.get(name)
@@ -99,14 +128,19 @@ export class WorkspaceRegistry {
   }
 
   unregister(name: string): void {
-    if (this.byName.delete(name)) this.notifyChange()
+    if (this.byName.delete(name)) {
+      this.notifyRemoved(name)
+      this.notifyChange()
+    }
   }
 
   unregisterByConnection(conn: Connection): void {
     if (!conn.workspace) return
     const cur = this.byName.get(conn.workspace)
     if (cur === conn) {
-      this.byName.delete(conn.workspace)
+      const name = conn.workspace
+      this.byName.delete(name)
+      this.notifyRemoved(name)
       this.notifyChange()
     }
   }
@@ -158,6 +192,8 @@ export class WorkspaceRegistry {
             log.warn(`eviction listener error: ${e}`)
           }
         }
+        // §33: eviction is also a "workspace went away" event.
+        this.notifyRemoved(name)
       }
       conn.close()
     }

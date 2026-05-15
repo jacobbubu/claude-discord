@@ -1893,3 +1893,20 @@ bump 0.0.28 → 0.0.29。
 **测试。** `validateEmbed` 单元覆盖所有上限分支；`toolReply` e2e 验证 embed 模式发 1 条消息（不 chunk）、mock channel 历史里能看到 embed 字段。
 
 bump 0.0.29 → 0.0.30。
+
+### 33. typing 心跳 — 让用户感知"还在跑"
+
+**问题。** 用户在 Discord 发消息后，daemon 在 inbound-router 里调一次 `sendTyping()`，Discord 的 "claude is typing…" 大约 10 秒衰减。CC 长任务往往要 1-2 分钟才出 reply，中间用户看着像没响应。
+
+**改动。** daemon 持续刷 typing，直到 CC 真出消息或超时。
+
+- 新模块 `src/daemon/typing-heartbeat.ts`：`TypingHeartbeat` 类按 `chatId` 维护 interval。`start(chatId)` 立即 `sendTyping()` + 启 8s 定时（Discord typing 衰减 ~10s，留 2s 余量）；`stop(chatId)` 清 timer；`stopAll()` 全清。timer `.unref()` 不阻进程退出。Max 5 分钟保险，超过自停 + log.warn（CC 真卡死时 dot 也停，用户知道有问题）。
+- `inbound-router.ts` 收到 inbound 后从一次 `sendTyping()` 改成 `heartbeat.start(chatId, conn.workspace)`。同一 chatId 重复 start = 重置计时器，正合"用户连发两条"的情形。`workspace` 入参让 `stopByWorkspace` 在 plugin 断开时能精准清掉对应的心跳。
+- `tool-handlers.ts`：`toolReply` / `toolEditMessage` / `toolThreadReply` 成功送出**或 send 抛错**后都调 `heartbeat.stop(chatId)`。送失败也停 — CC 不会通过我们重试，留个 stale dot 等 5min 比直接停更糟。`react`/`fetch_messages`/`download_attachment` 不算"回复"，不停。
+- `registry.ts` 加 `onWorkspaceRemoved(fn)` listener，从 `unregister` / `unregisterByConnection` / 容量驱动 eviction 三处都 fire。daemon 把它连到 `heartbeat.stopByWorkspace(name)` —— plugin 进程死或被踢时，该 workspace 关联的所有 typing 心跳秒清，不用等 5min 安全帽。
+- `daemon/index.ts` 拿一个全局 `TypingHeartbeat` 实例，shutdown 时 `stopAll()` 清掉 timer，避免 SIGTERM 后悬挂。
+- 跟 §24 自动 trace thread 互补：工具调用过程 thread 在动 + 主频道 typing 不断 → 用户两侧都能感知"还在跑"。
+
+**测试。** vitest fake timers 覆盖 TypingHeartbeat：start 立刻 sendTyping + 推进 8s 再 sendTyping、stop 后不再调、stopAll 一次清全部、超 max 自停 + warn、重复 start 重置而不叠加。
+
+bump 0.0.30 → 0.0.31。

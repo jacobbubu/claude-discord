@@ -24,6 +24,7 @@ import { readAccessFile } from './access-control.ts'
 import type { DiscordGateway } from './discord-gateway.ts'
 import type { RingBufferMap } from './ring-buffer.ts'
 import { assertSendable, safeAttName } from './safety.ts'
+import type { TypingHeartbeat } from './typing-heartbeat.ts'
 import { log } from '../shared/logger.ts'
 import type { Paths } from '../shared/paths.ts'
 
@@ -119,6 +120,9 @@ export type ToolContext = {
   ringBuffers: RingBufferMap
   paths: Paths
   workspace: string
+  /** §33: stopped on successful reply/edit_message/thread_reply so the
+   *  "typing…" indicator doesn't outlive CC's response. */
+  typingHeartbeat?: TypingHeartbeat
 }
 
 export type ToolOutcome =
@@ -260,6 +264,9 @@ export async function toolReply(
       const sent = (await (ch as { send: (o: MessageCreateOptions) => Promise<Message> }).send(opts)) as Message
       sentIds.push(sent.id)
     } catch (e) {
+      // §33: stop typing on send failure too — CC won't retry through us,
+      // and a stale dot until the 5min cap is worse than no dot.
+      ctx.typingHeartbeat?.stop(chatId)
       return fail(`reply (embed) failed: ${e instanceof Error ? e.message : String(e)}`)
     }
   } else {
@@ -284,6 +291,7 @@ export async function toolReply(
         sentIds.push(sent.id)
       } catch (e) {
         const err = e instanceof Error ? e.message : String(e)
+        ctx.typingHeartbeat?.stop(chatId) // §33
         return fail(`reply failed after ${sentIds.length} of ${chunks.length} chunk(s): ${err}`)
       }
     }
@@ -294,6 +302,9 @@ export async function toolReply(
     direction: 'out',
     text: text,
   })
+
+  // §33: a real reply landed — drop the typing indicator.
+  ctx.typingHeartbeat?.stop(chatId)
 
   const summary =
     sentIds.length === 1
@@ -342,8 +353,11 @@ export async function toolEditMessage(
       messageId,
     )
     const edited = await msg.edit(text)
+    // §33: edit also counts as "CC responded".
+    ctx.typingHeartbeat?.stop(chatId)
     return { ok: true, result: `edited (id: ${edited.id})` }
   } catch (e) {
+    ctx.typingHeartbeat?.stop(chatId) // §33: also stop on edit failure
     return fail(e instanceof Error ? e.message : String(e))
   }
 }
@@ -452,11 +466,14 @@ export async function toolThreadReply(
       startThread: (opts: { name: string }) => Promise<{ id: string; send: (s: string) => Promise<Message> }>
     }).startThread({ name })
     const first = await thread.send(content)
+    // §33: thread_reply also counts as "CC responded".
+    ctx.typingHeartbeat?.stop(chatId)
     return {
       ok: true,
       result: JSON.stringify({ thread_id: thread.id, message_id: first.id }),
     }
   } catch (e) {
+    ctx.typingHeartbeat?.stop(chatId) // §33: also stop on thread_reply failure
     return fail(e instanceof Error ? e.message : String(e))
   }
 }
