@@ -25,6 +25,27 @@ const REPO_ROOT = join(__dirname, '..', '..', '..', '..')
 
 const wait = (ms: number) => new Promise(r => setTimeout(r, ms))
 
+/**
+ * Strip Discord secret env vars before spawning child processes (#93).
+ * The test asserts the daemon runs in degraded mode (no real gateway), which
+ * relies on `DISCORD_BOT_TOKEN` being unset. Developer shells (e.g. this
+ * repo's yolo2 profile) routinely export the token, so without this scrub
+ * the daemon would happily log in to Discord and the test would fail on the
+ * wrong error string.
+ */
+function spawnEnv(): Record<string, string> {
+  const e = { ...process.env } as Record<string, string | undefined>
+  delete e.DISCORD_BOT_TOKEN
+  delete e.DISCORD_CHANNEL_ID
+  // Drop undefineds so callers can pass this to spawn() typed as
+  // Record<string, string>.
+  const clean: Record<string, string> = {}
+  for (const [k, v] of Object.entries(e)) {
+    if (typeof v === 'string') clean[k] = v
+  }
+  return clean
+}
+
 describe('subprocess e2e (real daemon + real plugin + MCP Client)', () => {
   let stateDir: string
   let daemon: ChildProcess
@@ -55,7 +76,7 @@ describe('subprocess e2e (real daemon + real plugin + MCP Client)', () => {
   it('lists 5 tools and degraded reply returns gateway-not-running error', async () => {
     // 1. Spawn daemon
     daemon = spawn('bun', ['run', join(REPO_ROOT, 'src/cli/index.ts'), 'start'], {
-      env: { ...process.env, CLAUDE_DISCORD_STATE_DIR: stateDir },
+      env: { ...spawnEnv(), CLAUDE_DISCORD_STATE_DIR: stateDir },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
 
@@ -69,7 +90,7 @@ describe('subprocess e2e (real daemon + real plugin + MCP Client)', () => {
     transport = new StdioClientTransport({
       command: 'bun',
       args: ['run', join(REPO_ROOT, 'src/plugin/index.ts')],
-      env: { ...process.env, CLAUDE_DISCORD_STATE_DIR: stateDir } as Record<string, string>,
+      env: { ...spawnEnv(), CLAUDE_DISCORD_STATE_DIR: stateDir },
     })
     client = new Client({ name: 'mock-cc', version: '0.0.1' }, { capabilities: {} })
     await client.connect(transport)
