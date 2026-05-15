@@ -180,7 +180,7 @@ Discord-side slash commands (registered when daemon connects to Discord):
 
 ```bash
 bun run typecheck   # tsc --noEmit
-bun run test        # vitest run (113 tests)
+bun run test        # vitest run (400+ tests across unit / controlled-e2e / live-e2e)
 bun run check       # typecheck + tests
 bun run dev         # foreground daemon with file watch
 ```
@@ -197,14 +197,74 @@ Spike prototypes that validated each architectural decision live in
 
 ```
 src/
-├── daemon/         # Singleton daemon — Discord gateway, registry, ring buffer, LRU,
-│                   #   routing, access control, slash commands, permission relay
-├── plugin/         # CC-side thin proxy: MCP stdio ↔ Unix socket
-├── cli/            # claude-discord-bot subcommands
-├── installer/      # plist / systemd templates + plan/apply/verify
-├── protocol/       # NDJSON wire schemas (zod) + version + framing
-└── shared/         # paths, atomic write, logger
+├── daemon/                # Singleton daemon — Discord gateway, registry, ring
+│                          #   buffer, LRU, routing, access control, slash
+│                          #   commands, permission relay, typing heartbeat
+├── plugin/                # CC-side thin proxy: MCP stdio ↔ Unix socket,
+│                          #   orphan-watcher, reconnect/backoff
+├── cli/                   # claude-discord-bot subcommands + PreToolUse /
+│                          #   PostToolUse hook entrypoints
+├── installer/             # plist / systemd templates + plan/apply/verify
+├── protocol/              # NDJSON wire schemas (zod) + version + framing
+└── shared/                # paths, atomic write, rotating-file logger
+
+_bmad/                     # BMAD-METHOD v6.6.0 install (bmm module). Source-
+│                          #   controlled so anyone can re-run skills.
+│                          #   Local customizations live in custom/ only.
+_bmad-output/
+├── planning-artifacts/    # Spec gate (PRD / architecture / epics) — committed.
+│                          #   Each merged delta first appended a §N section
+│                          #   to architecture.md before any code changed.
+└── brainstorming/         # Brainstorming session snapshots — committed.
+
+docs/                      # Long-term project knowledge (research, code
+                           #   reviews). Not tied to a specific delta.
+
+.claude/skills/            # 42 BMAD skills written by the installer.
+                           #   Invoke from Claude Code via `bmad-help`,
+                           #   `bmad-create-architecture`, etc.
 ```
+
+## BMAD methodology
+
+This repo uses [BMAD-METHOD](https://github.com/bmad-method/BMAD-METHOD)
+v6.6.0 (bmm module, claude-code tool) for a spec-first workflow. Every
+non-trivial change goes through:
+
+1. Append a numbered `### §N` section to
+   `_bmad-output/planning-artifacts/architecture.md` describing the problem,
+   the change, and the test plan — **before** any code is written.
+2. Open a GitHub issue in Chinese, labelled with the canonical work-type
+   label (`feature` / `bug` / `chore` / `requirement` / `research`).
+3. Branch (`codex/<issue-id>-<slug>`), implement, push, open a PR titled
+   `<type>: <短摘要> (#<issue-id>)`. PR body references the architecture
+   §N and lists the verification steps that proved the change.
+
+Why bother: the project has ~30 architecture deltas (§1–§34); reading
+`architecture.md` linearly gives the full history of *why* every moving
+piece is the way it is, in commit order. Code-only diff archaeology would
+take much longer.
+
+`docs/` vs `_bmad-output/planning-artifacts/`: long-running project knowledge
+(reference notes, code-review reports, deep-dive research) goes in `docs/`.
+Delta-scoped artifacts (one architecture §N = one decision) stay in
+`_bmad-output/planning-artifacts/`. If you're not sure, ask yourself "is
+this *about* a specific code change?" — if yes, append a §N to architecture.md
+and link the doc from there.
+
+Onboarding for a new collaborator inside Claude Code:
+
+```text
+> use the bmad-help skill                  # lists every BMAD skill available
+> use the bmad-create-architecture skill   # add a new architecture §N
+> use the bmad-create-prd skill            # update the PRD (if scope expands)
+```
+
+Re-running the installer is safe: `npx bmad-method install` re-applies the
+upstream files but honours `_bmad/custom/config.toml` (which pins
+`core.output_folder = "_bmad-output"` and the Chinese output preference).
+Don't edit anything outside `_bmad/custom/` directly — those changes get
+clobbered on the next install.
 
 ## Configuration
 
