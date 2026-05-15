@@ -18,7 +18,10 @@ import type { InboundMsg, ToolResultMsg } from '../protocol/schema.ts'
 const TOOL_DEFS = [
   {
     name: 'reply',
-    description: 'Send a reply on Discord. Pass chat_id from the inbound message.',
+    description:
+      'Send a reply on Discord. Pass chat_id from the inbound message. ' +
+      'For long structured summaries (task reports, PR review takeaways, etc.) pass an `embed` ' +
+      'with title / description / fields; keep `text` short as a teaser line.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -26,6 +29,30 @@ const TOOL_DEFS = [
         text: { type: 'string' },
         reply_to: { type: 'string' },
         files: { type: 'array', items: { type: 'string' } },
+        embed: {
+          type: 'object',
+          description:
+            'Optional Discord embed. Use for structured summaries. Discord caps: title ≤ 256, ' +
+            'description ≤ 4096, up to 25 fields (name ≤ 256, value ≤ 1024), and ' +
+            'title + description + all field name/value sums ≤ 6000.',
+          properties: {
+            title: { type: 'string' },
+            description: { type: 'string' },
+            color: { type: 'integer', description: 'RGB int (0..0xFFFFFF)' },
+            fields: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string' },
+                  value: { type: 'string' },
+                  inline: { type: 'boolean' },
+                },
+                required: ['name', 'value'],
+              },
+            },
+          },
+        },
       },
       required: ['chat_id', 'text'],
     },
