@@ -343,9 +343,12 @@ export class PermissionRelay {
 
     let label = effectiveBehavior === 'allow' ? '✅ Allowed' : '❌ Denied'
     if (behavior === 'always') {
-      const ok = persistAllowRule(claimed.tool_name)
+      // §34: tighten to a derived pattern (e.g. Bash(git:*)) when possible
+      // so we don't auto-allow every future invocation of catch-all tools.
+      const rule = deriveAllowRule(claimed.tool_name, claimed.input_preview)
+      const ok = persistAllowRule(rule)
       label = ok
-        ? `✅ Allowed always (\`${claimed.tool_name}\` added to settings.json)`
+        ? `✅ Allowed always (\`${rule}\` added to settings.json)`
         : `✅ Allowed (settings.json write failed; this call only)`
     }
     await interaction
@@ -463,7 +466,53 @@ export function makeRequestId(): string {
 }
 
 /**
- * §20: append a tool name to ~/.claude/settings.json `permissions.allow`.
+ * §34 / §20.1: derive a finer-grained permission rule from the tool input,
+ * to be written into `~/.claude/settings.json` `permissions.allow` on the
+ * "Allow always" click. Beats §20's bare-tool-name approach which would
+ * auto-allow *every* future invocation of e.g. Bash (including `rm -rf`).
+ *
+ * Strategy (conservative — when in doubt, fall back to the bare name so
+ * we never widen beyond §20's existing behavior):
+ *   - Bash: take command's first whitespace-delimited word → `Bash(<word>:*)`
+ *   - Edit / Write / MultiEdit / NotebookEdit: use the file path → `Tool(<path>)`
+ *   - everything else (or unparseable input_preview): bare `<tool_name>`
+ *
+ * Pure for unit-testability.
+ */
+export function deriveAllowRule(toolName: string, inputPreview: string): string {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(inputPreview)
+  } catch {
+    return toolName
+  }
+  if (typeof parsed !== 'object' || parsed === null) return toolName
+  const input = parsed as Record<string, unknown>
+
+  if (toolName === 'Bash') {
+    const cmd = input.command
+    if (typeof cmd !== 'string') return toolName
+    const first = cmd.trim().split(/\s+/, 1)[0]
+    if (!first) return toolName
+    return `Bash(${first}:*)`
+  }
+  if (toolName === 'Edit' || toolName === 'Write' || toolName === 'MultiEdit') {
+    const p = input.file_path
+    if (typeof p !== 'string' || p.length === 0) return toolName
+    return `${toolName}(${p})`
+  }
+  if (toolName === 'NotebookEdit') {
+    const p = input.notebook_path
+    if (typeof p !== 'string' || p.length === 0) return toolName
+    return `NotebookEdit(${p})`
+  }
+  return toolName
+}
+
+/**
+ * §20: append a rule string to ~/.claude/settings.json `permissions.allow`.
+ * §34: the input is now usually a derived pattern (e.g. `Bash(git:*)`) rather
+ * than a bare tool name; the function itself just appends any string.
  * Idempotent (no duplicate entries). Returns true on successful write.
  *
  * Tests can pass an explicit path; production callers omit it (defaults

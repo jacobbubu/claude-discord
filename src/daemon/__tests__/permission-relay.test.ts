@@ -17,6 +17,7 @@ import { Connection } from '../connection.ts'
 import {
   PERMISSION_TEXT_RE,
   PermissionRelay,
+  deriveAllowRule,
   makeRequestId,
   persistAllowRule,
 } from '../permission-relay.ts'
@@ -822,5 +823,98 @@ describe('persistAllowRule (§20)', () => {
     writeFileSync(path, 'not valid json {{{')
     const ok = persistAllowRule('Bash', path)
     expect(ok).toBe(false)
+  })
+})
+
+describe('deriveAllowRule (§34 / §20.1)', () => {
+  it('Bash + simple command → Tool(prefix:*)', () => {
+    expect(deriveAllowRule('Bash', JSON.stringify({ command: 'git status -s' }))).toBe('Bash(git:*)')
+    expect(deriveAllowRule('Bash', JSON.stringify({ command: 'npm test' }))).toBe('Bash(npm:*)')
+  })
+
+  it('Bash extracts only the first whitespace-delimited word', () => {
+    expect(deriveAllowRule('Bash', JSON.stringify({ command: '  git   log  ' }))).toBe('Bash(git:*)')
+    expect(deriveAllowRule('Bash', JSON.stringify({ command: 'git status && rm x' }))).toBe('Bash(git:*)')
+  })
+
+  it('Bash with empty / missing command → bare tool name', () => {
+    expect(deriveAllowRule('Bash', JSON.stringify({ command: '' }))).toBe('Bash')
+    expect(deriveAllowRule('Bash', JSON.stringify({ command: '   ' }))).toBe('Bash')
+    expect(deriveAllowRule('Bash', JSON.stringify({}))).toBe('Bash')
+  })
+
+  it('Edit / Write / MultiEdit use the file_path as exact pattern', () => {
+    expect(deriveAllowRule('Edit', JSON.stringify({ file_path: '/abs/a.ts' }))).toBe('Edit(/abs/a.ts)')
+    expect(deriveAllowRule('Write', JSON.stringify({ file_path: '/abs/b.md' }))).toBe('Write(/abs/b.md)')
+    expect(deriveAllowRule('MultiEdit', JSON.stringify({ file_path: '/abs/c.ts' }))).toBe('MultiEdit(/abs/c.ts)')
+  })
+
+  it('NotebookEdit uses notebook_path', () => {
+    expect(deriveAllowRule('NotebookEdit', JSON.stringify({ notebook_path: '/a/b.ipynb' }))).toBe(
+      'NotebookEdit(/a/b.ipynb)',
+    )
+  })
+
+  it('file-path tools fall back to bare name when path is missing', () => {
+    expect(deriveAllowRule('Edit', JSON.stringify({}))).toBe('Edit')
+    expect(deriveAllowRule('NotebookEdit', JSON.stringify({ notebook_path: '' }))).toBe('NotebookEdit')
+  })
+
+  it('unknown tools always fall back to bare name', () => {
+    expect(deriveAllowRule('SomeOther', JSON.stringify({ whatever: 'x' }))).toBe('SomeOther')
+  })
+
+  it('non-JSON / non-object input_preview falls back to bare name', () => {
+    expect(deriveAllowRule('Bash', 'not json {{{')).toBe('Bash')
+    expect(deriveAllowRule('Bash', 'null')).toBe('Bash')
+    expect(deriveAllowRule('Bash', '"a string"')).toBe('Bash')
+  })
+
+  it('handleButton "Allow always" persists the derived pattern, not the bare name', async () => {
+    const { relay, paths } = setupRelay({ allowFrom: ['u-1'] })
+    // Pre-create an interaction-like object with the "always" customId
+    const interactionMessage = { content: 'prompt' }
+    let updatedWith: string | null = null
+    const interaction = {
+      customId: 'perm:always:abcde',
+      user: { id: 'u-1' },
+      message: interactionMessage,
+      reply: vi.fn(),
+      update: vi.fn().mockImplementation((opts: { content: string }) => {
+        updatedWith = opts.content
+        return Promise.resolve()
+      }),
+    }
+    // Seed a pending entry directly via private map for focused testing.
+    ;(relay as unknown as { pending: Map<string, unknown> }).pending.set('abcde', {
+      target: { kind: 'plugin', workspace: 'foo' },
+      source: 'cc-builtin',
+      tool_name: 'Bash',
+      description: 'run git status',
+      input_preview: JSON.stringify({ command: 'git status -s' }),
+      messageRefs: [],
+      expiresAt: Date.now() + 60_000,
+    })
+    // Use a temp settings.json so the assertion is hermetic.
+    const settingsPath = join(mkdtempSync(join(tmpdir(), 'pr-rule-')), 'settings.json')
+    // Patch HOME so persistAllowRule's default falls back to the temp dir's parent.
+    const savedHome = process.env.HOME
+    try {
+      // Force persistAllowRule to write somewhere safe by pre-populating the
+      // target dir and pointing HOME there + creating .claude/settings.json.
+      const homeDir = mkdtempSync(join(tmpdir(), 'pr-home-'))
+      mkdirSync(join(homeDir, '.claude'), { recursive: true })
+      process.env.HOME = homeDir
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await relay.handleButton(interaction as any)
+      const written = JSON.parse(readFileSync(join(homeDir, '.claude', 'settings.json'), 'utf8'))
+      expect(written.permissions.allow).toEqual(['Bash(git:*)'])
+      expect(updatedWith).toContain('Bash(git:*)')
+    } finally {
+      process.env.HOME = savedHome
+    }
+    // Silence the unused-var warning from settingsPath above (kept for clarity).
+    void settingsPath
+    relay.stop()
   })
 })
