@@ -1873,3 +1873,23 @@ bump 0.0.27 → 0.0.28。
 **已知非干净点（写进 PR 描述）。** 本 session 里手动启动 daemon 用了 `nohup ... >> daemon.log` redirect，新 daemon 也会打开同一个 `daemon.log` 持 FD。`O_APPEND` 内核保证不撕裂、但同一行会落两遍。第一次 rotate 后 shell FD 指着改名后的 `.1`、daemon 写新文件，之后两边分离。后续重启 daemon 时把 `>> daemon.log` 去掉就干净。
 
 bump 0.0.28 → 0.0.29。
+
+### 32. FR-5.4 结构化总结走 embed (PRD §11 / #38)
+
+**背景。** PRD §11 唯一未实现的 FR：`reply` 工具支持 Discord embed —— 含 title / description / fields，总字符 ≤ 6000。日常对话纯文本 chunk 已够；这条用于结构化总结（任务报告、PR review 摘要等），渲染更友好。
+
+**改动。**
+
+- `reply` 工具 inputSchema 加可选 `embed?: { title?: string, description?: string, color?: number, fields?: Array<{name:string, value:string, inline?:boolean}> }`
+- `toolReply`：当 `embed` 存在时构造 `EmbedBuilder` 一并发；**embed 模式跳过 chunking**（description 自带 4096 容量，embed 自身用来装长文），content 期望短（≤ 2000）
+- 抽出纯函数 `validateEmbed(input): {ok, embed, totalChars}` 校验所有 Discord 上限：
+  - title ≤ 256；description ≤ 4096；fields ≤ 25 项
+  - 每 field name ≤ 256，value ≤ 1024
+  - **总字符 ≤ 6000**（title + description + 所有 field 的 name + value 之和）
+  - 任一上限超出 → `fail(...)` 不发
+- `mcp-server.ts` instructions 加一句指引：长结构化总结用 embed（标题/分段）+ 短 content 引语
+- `MockMessage`/`MockClient` 的 `send` 也接受 `embeds`，记录在 message 上，便于 e2e 断言
+
+**测试。** `validateEmbed` 单元覆盖所有上限分支；`toolReply` e2e 验证 embed 模式发 1 条消息（不 chunk）、mock channel 历史里能看到 embed 字段。
+
+bump 0.0.29 → 0.0.30。

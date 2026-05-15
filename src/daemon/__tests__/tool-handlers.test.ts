@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { writeAccessFile } from '../access-control.ts'
 import type { DiscordGateway } from '../discord-gateway.ts'
 import { RingBufferMap } from '../ring-buffer.ts'
-import { dispatchToolCall, type ToolContext, type ToolOutcome } from '../tool-handlers.ts'
+import { dispatchToolCall, validateEmbed, type ToolContext, type ToolOutcome } from '../tool-handlers.ts'
 
 // Narrowing helpers — `expect(r.ok).toBe(false)` doesn't propagate to TS,
 // so we throw and narrow manually before reading discriminated-union fields.
@@ -472,11 +472,170 @@ describe('tool-handlers', () => {
     })
   })
 
+  describe('reply (§32: embed)', () => {
+    it('embed mode sends exactly one message (no chunking), embed content round-trips', async () => {
+      const { sendCalls } = mockDmChannel({})
+      // 3000 chars fits in description (≤ 4096) — and proves we don't chunk
+      // even at sizes that would split a plain-text reply at the 2000 cap.
+      const longDesc = 'x'.repeat(3_000)
+      const r = await dispatchToolCall(ctx, 'reply', {
+        chat_id: 'dm-u-1',
+        text: 'see embed',
+        embed: {
+          title: 'Summary',
+          description: longDesc,
+          fields: [{ name: 'A', value: 'one' }, { name: 'B', value: 'two' }],
+        },
+      })
+      expectOk(r)
+      expect(sendCalls.length).toBe(1)
+      const opts = sendCalls[0]![0] as { content?: string; embeds?: unknown[] }
+      expect(opts.content).toBe('see embed')
+      expect(opts.embeds).toHaveLength(1)
+      // EmbedBuilder serializes via .data — title/description/fields round-trip.
+      const built = opts.embeds![0] as { data: { title?: string; description?: string; fields?: Array<{ name: string; value: string }> } }
+      expect(built.data.title).toBe('Summary')
+      expect(built.data.description).toBe(longDesc)
+      expect(built.data.fields?.length).toBe(2)
+    })
+
+    it('omits content when text is empty (embed-only message)', async () => {
+      const { sendCalls } = mockDmChannel({})
+      const r = await dispatchToolCall(ctx, 'reply', {
+        chat_id: 'dm-u-1',
+        text: '',
+        embed: { title: 'Only embed' },
+      })
+      expectOk(r)
+      const opts = sendCalls[0]![0] as { content?: string; embeds?: unknown[] }
+      expect(opts.content).toBeUndefined()
+      expect(opts.embeds).toHaveLength(1)
+    })
+
+    it('rejects oversize total before sending (no round-trip wasted)', async () => {
+      const { sendCalls, fetched } = mockDmChannel({})
+      const oversized = 'y'.repeat(4096)
+      const r = await dispatchToolCall(ctx, 'reply', {
+        chat_id: 'dm-u-1',
+        text: 'hi',
+        embed: {
+          description: oversized,
+          // 4096 + many field values to push total well past 6000
+          fields: Array.from({ length: 20 }, (_, i) => ({ name: `f${i}`, value: 'v'.repeat(200) })),
+        },
+      })
+      expectFail(r)
+      expect(expectFail(r).error).toMatch(/6000/)
+      // Validation happens before fetchTextChannel — saves a Discord round-trip.
+      expect(fetched).not.toHaveBeenCalled()
+      expect(sendCalls.length).toBe(0)
+    })
+
+    it('rejects too-many fields', async () => {
+      mockDmChannel({})
+      const r = await dispatchToolCall(ctx, 'reply', {
+        chat_id: 'dm-u-1',
+        text: '',
+        embed: {
+          fields: Array.from({ length: 26 }, (_, i) => ({ name: `f${i}`, value: 'v' })),
+        },
+      })
+      expectFail(r)
+      expect(expectFail(r).error).toMatch(/max 25/)
+    })
+
+    it('text-only (no embed) keeps existing chunking behavior', async () => {
+      const { sendCalls } = mockDmChannel({})
+      const r = await dispatchToolCall(ctx, 'reply', {
+        chat_id: 'dm-u-1',
+        text: 'a'.repeat(4_500),
+      })
+      expectOk(r)
+      // 4500 / 2000 chunks → 3 sends
+      expect(sendCalls.length).toBe(3)
+      // No embeds field smuggled in
+      const opts = sendCalls[0]![0] as { embeds?: unknown[] }
+      expect(opts.embeds).toBeUndefined()
+    })
+  })
+
   describe('dispatch unknown tool', () => {
     it('returns "unknown tool" failure', async () => {
       const r = await dispatchToolCall(ctx, 'nonsense', {})
       expect(r.ok).toBe(false)
       expect(expectFail(r).error).toMatch(/unknown tool/)
     })
+  })
+})
+
+describe('validateEmbed (§32 / FR-5.4) — pure unit', () => {
+  it('accepts a minimal valid embed', () => {
+    const r = validateEmbed({ title: 'hi' })
+    if (!r.ok) throw new Error(r.error)
+    expect(r.totalChars).toBe(2)
+  })
+
+  it('sums title + description + every field name & value', () => {
+    const r = validateEmbed({
+      title: 'AB', // 2
+      description: 'CDE', // 3
+      fields: [{ name: 'FG', value: 'HIJ' }], // 2 + 3
+    })
+    if (!r.ok) throw new Error(r.error)
+    expect(r.totalChars).toBe(10)
+  })
+
+  it('rejects title > 256 chars', () => {
+    const r = validateEmbed({ title: 'x'.repeat(257) })
+    expect(r.ok).toBe(false)
+  })
+
+  it('rejects description > 4096 chars', () => {
+    const r = validateEmbed({ description: 'x'.repeat(4097) })
+    expect(r.ok).toBe(false)
+  })
+
+  it('rejects more than 25 fields', () => {
+    const r = validateEmbed({
+      fields: Array.from({ length: 26 }, (_, i) => ({ name: `f${i}`, value: 'v' })),
+    })
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.error).toMatch(/25/)
+  })
+
+  it('rejects field name > 256', () => {
+    const r = validateEmbed({ fields: [{ name: 'x'.repeat(257), value: 'v' }] })
+    expect(r.ok).toBe(false)
+  })
+
+  it('rejects field value > 1024', () => {
+    const r = validateEmbed({ fields: [{ name: 'n', value: 'x'.repeat(1025) }] })
+    expect(r.ok).toBe(false)
+  })
+
+  it('rejects empty field name or value', () => {
+    expect(validateEmbed({ fields: [{ name: '', value: 'v' }] }).ok).toBe(false)
+    expect(validateEmbed({ fields: [{ name: 'n', value: '' }] }).ok).toBe(false)
+  })
+
+  it('rejects total > 6000 across all parts', () => {
+    const r = validateEmbed({
+      description: 'd'.repeat(4096), // 4096
+      fields: [
+        { name: 'a', value: 'v'.repeat(1024) }, // 1 + 1024
+        { name: 'b', value: 'v'.repeat(1024) }, // 1 + 1024
+      ],
+      // total = 4096 + 1 + 1024 + 1 + 1024 = 6146 > 6000
+    })
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.error).toMatch(/6000/)
+  })
+
+  it('rejects color out of [0, 0xFFFFFF]', () => {
+    expect(validateEmbed({ title: 't', color: -1 }).ok).toBe(false)
+    expect(validateEmbed({ title: 't', color: 0x1000000 }).ok).toBe(false)
+    expect(validateEmbed({ title: 't', color: 0x4287f5 }).ok).toBe(true)
   })
 })

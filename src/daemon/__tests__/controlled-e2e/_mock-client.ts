@@ -27,6 +27,8 @@ export type MockMessage = {
   channel: MockChannel
   author: { id: string; username: string; bot: boolean; tag: string }
   content: string
+  /** §32: captured discord.js embeds (typed as unknown[] — tests cast to JSON shape). */
+  embeds: unknown[]
   attachments: Map<string, { id: string; name?: string; size: number; contentType?: string; url?: string }>
   reactions: Map<string, Set<string>>
   reference: { messageId?: string } | null
@@ -40,7 +42,14 @@ export type MockMessage = {
   startThread: (opts: { name: string }) => Promise<MockChannel>
 }
 
-type SendOpts = { content?: string; files?: unknown[]; reply?: { messageReference?: string }; components?: unknown[] }
+type SendOpts = {
+  content?: string
+  files?: unknown[]
+  reply?: { messageReference?: string }
+  components?: unknown[]
+  /** §32: embeds sent via discord.js EmbedBuilder; mock records them verbatim. */
+  embeds?: unknown[]
+}
 
 export type MockChannel = {
   id: string
@@ -81,6 +90,7 @@ const makeMessage = (
   content: string,
   client: MockClient,
   reference?: { messageId?: string },
+  embeds: unknown[] = [],
 ): MockMessage => {
   const msg: MockMessage = {
     id: seq(client),
@@ -88,6 +98,7 @@ const makeMessage = (
     channel,
     author,
     content,
+    embeds,
     attachments: new Map(),
     reactions: new Map(),
     reference: reference ?? null,
@@ -163,6 +174,7 @@ const makeChannel = (
         opts.content ?? '',
         client,
         opts.reply?.messageReference ? { messageId: opts.reply.messageReference } : undefined,
+        opts.embeds,
       )
       ch.history.push(msg)
       return msg
@@ -321,7 +333,7 @@ const makeUser = (id: string, username: string, client: MockClient): MockUser =>
     id,
     username,
     tag: `${username}#0000`,
-    async send(opts: { content?: string; components?: unknown[] }) {
+    async send(opts: { content?: string; components?: unknown[]; embeds?: unknown[] }) {
       const { channel } = client.ensureDmChannel(id, username)
       const msg = makeMessage(
         channel,
@@ -333,6 +345,8 @@ const makeUser = (id: string, username: string, client: MockClient): MockUser =>
         },
         opts.content ?? '',
         client,
+        undefined,
+        opts.embeds,
       )
       channel.history.push(msg)
       dmHistory.push(msg)

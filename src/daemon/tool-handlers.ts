@@ -14,6 +14,7 @@ import { join } from 'node:path'
 import {
   AttachmentBuilder,
   ChannelType,
+  EmbedBuilder,
   type Channel,
   type Message,
   type MessageReplyOptions,
@@ -29,6 +30,89 @@ import type { Paths } from '../shared/paths.ts'
 const HARD_CHUNK_LIMIT = 2000
 const MAX_FILES_PER_MESSAGE = 10
 const MAX_FILE_BYTES = 25 * 1024 * 1024
+
+// Discord embed limits (§32 / FR-5.4). Sum of title + description + each
+// field's name + value across all embeds must be ≤ 6000.
+const EMBED_TITLE_MAX = 256
+const EMBED_DESC_MAX = 4096
+const EMBED_FIELDS_MAX = 25
+const EMBED_FIELD_NAME_MAX = 256
+const EMBED_FIELD_VALUE_MAX = 1024
+const EMBED_TOTAL_MAX = 6000
+
+/** Shape of the `embed` arg the `reply` tool accepts. */
+export type ReplyEmbedInput = {
+  title?: string
+  description?: string
+  color?: number
+  fields?: Array<{ name: string; value: string; inline?: boolean }>
+}
+
+/** §32 / FR-5.4: validate an embed input against Discord's per-field and
+ *  6000-total-char caps. Pure for unit-testability. Returns either a built
+ *  EmbedBuilder + the computed char total, or a human-readable error. */
+export function validateEmbed(
+  input: ReplyEmbedInput,
+): { ok: true; embed: EmbedBuilder; totalChars: number } | { ok: false; error: string } {
+  let total = 0
+
+  if (input.title != null) {
+    if (typeof input.title !== 'string') return { ok: false, error: 'embed.title must be a string' }
+    if (input.title.length > EMBED_TITLE_MAX) {
+      return { ok: false, error: `embed.title > ${EMBED_TITLE_MAX} chars` }
+    }
+    total += input.title.length
+  }
+
+  if (input.description != null) {
+    if (typeof input.description !== 'string') return { ok: false, error: 'embed.description must be a string' }
+    if (input.description.length > EMBED_DESC_MAX) {
+      return { ok: false, error: `embed.description > ${EMBED_DESC_MAX} chars` }
+    }
+    total += input.description.length
+  }
+
+  if (input.color != null) {
+    if (typeof input.color !== 'number' || !Number.isInteger(input.color) || input.color < 0 || input.color > 0xffffff) {
+      return { ok: false, error: 'embed.color must be an integer in [0, 0xFFFFFF]' }
+    }
+  }
+
+  const fields = input.fields ?? []
+  if (!Array.isArray(fields)) return { ok: false, error: 'embed.fields must be an array' }
+  if (fields.length > EMBED_FIELDS_MAX) {
+    return { ok: false, error: `embed.fields has ${fields.length} entries, max ${EMBED_FIELDS_MAX}` }
+  }
+  for (let i = 0; i < fields.length; i++) {
+    const f = fields[i]!
+    if (typeof f.name !== 'string' || typeof f.value !== 'string') {
+      return { ok: false, error: `embed.fields[${i}] requires string name + value` }
+    }
+    if (f.name.length === 0 || f.value.length === 0) {
+      return { ok: false, error: `embed.fields[${i}] name + value must be non-empty` }
+    }
+    if (f.name.length > EMBED_FIELD_NAME_MAX) {
+      return { ok: false, error: `embed.fields[${i}].name > ${EMBED_FIELD_NAME_MAX} chars` }
+    }
+    if (f.value.length > EMBED_FIELD_VALUE_MAX) {
+      return { ok: false, error: `embed.fields[${i}].value > ${EMBED_FIELD_VALUE_MAX} chars` }
+    }
+    total += f.name.length + f.value.length
+  }
+
+  if (total > EMBED_TOTAL_MAX) {
+    return { ok: false, error: `embed total ${total} chars > ${EMBED_TOTAL_MAX}` }
+  }
+
+  const eb = new EmbedBuilder()
+  if (input.title != null) eb.setTitle(input.title)
+  if (input.description != null) eb.setDescription(input.description)
+  if (input.color != null) eb.setColor(input.color)
+  if (fields.length > 0) {
+    eb.addFields(...fields.map(f => ({ name: f.name, value: f.value, inline: !!f.inline })))
+  }
+  return { ok: true, embed: eb, totalChars: total }
+}
 
 export type ToolContext = {
   gateway: DiscordGateway
@@ -123,10 +207,21 @@ export async function toolReply(
   const text = (args.text as string | undefined) ?? ''
   const replyTo = args.reply_to as string | undefined
   const files = (args.files as string[] | undefined) ?? []
+  const embedInput = args.embed as ReplyEmbedInput | undefined
 
   if (typeof chatId !== 'string' || chatId.length === 0) return fail('chat_id required')
   if (files.length > MAX_FILES_PER_MESSAGE) {
     return fail(`max ${MAX_FILES_PER_MESSAGE} attachments per message`)
+  }
+
+  // §32 / FR-5.4: validate embed up-front so a malformed input doesn't burn a
+  // round-trip and partial send.
+  let embed: EmbedBuilder | null = null
+  if (embedInput != null) {
+    if (typeof embedInput !== 'object') return fail('embed must be an object')
+    const res = validateEmbed(embedInput)
+    if (!res.ok) return fail(res.error)
+    embed = res.embed
   }
 
   const ch = await fetchTextChannel(ctx, chatId)
@@ -146,29 +241,51 @@ export async function toolReply(
     }
   }
 
-  const access = readAccessFile(ctx.paths.accessFile)
-  const limit = Math.max(1, Math.min(access.textChunkLimit ?? HARD_CHUNK_LIMIT, HARD_CHUNK_LIMIT))
-  const mode = access.chunkMode ?? 'length'
-  const replyMode = access.replyToMode ?? 'first'
-  const chunks = chunk(text, limit, mode)
   const sentIds: string[] = []
 
-  for (let i = 0; i < chunks.length; i++) {
-    const shouldReplyTo =
-      replyTo != null && replyMode !== 'off' && (replyMode === 'all' || i === 0)
+  if (embed != null) {
+    // §32: embed mode is single-message — the embed itself carries up to
+    // 6000 chars of structured content, so we don't chunk the (short) `text`
+    // companion. If text > HARD_CHUNK_LIMIT we still send it but Discord may
+    // reject; surface that as a normal send error.
     const opts: MessageCreateOptions = {
-      content: chunks[i]!,
-      ...(i === 0 && attachments.length > 0 ? { files: attachments } : {}),
-      ...(shouldReplyTo
-        ? ({ reply: { messageReference: replyTo!, failIfNotExists: false } } as MessageReplyOptions)
+      ...(text.length > 0 ? { content: text } : {}),
+      embeds: [embed],
+      ...(attachments.length > 0 ? { files: attachments } : {}),
+      ...(replyTo != null
+        ? ({ reply: { messageReference: replyTo, failIfNotExists: false } } as MessageReplyOptions)
         : {}),
     }
     try {
       const sent = (await (ch as { send: (o: MessageCreateOptions) => Promise<Message> }).send(opts)) as Message
       sentIds.push(sent.id)
     } catch (e) {
-      const err = e instanceof Error ? e.message : String(e)
-      return fail(`reply failed after ${sentIds.length} of ${chunks.length} chunk(s): ${err}`)
+      return fail(`reply (embed) failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  } else {
+    const access = readAccessFile(ctx.paths.accessFile)
+    const limit = Math.max(1, Math.min(access.textChunkLimit ?? HARD_CHUNK_LIMIT, HARD_CHUNK_LIMIT))
+    const mode = access.chunkMode ?? 'length'
+    const replyMode = access.replyToMode ?? 'first'
+    const chunks = chunk(text, limit, mode)
+
+    for (let i = 0; i < chunks.length; i++) {
+      const shouldReplyTo =
+        replyTo != null && replyMode !== 'off' && (replyMode === 'all' || i === 0)
+      const opts: MessageCreateOptions = {
+        content: chunks[i]!,
+        ...(i === 0 && attachments.length > 0 ? { files: attachments } : {}),
+        ...(shouldReplyTo
+          ? ({ reply: { messageReference: replyTo!, failIfNotExists: false } } as MessageReplyOptions)
+          : {}),
+      }
+      try {
+        const sent = (await (ch as { send: (o: MessageCreateOptions) => Promise<Message> }).send(opts)) as Message
+        sentIds.push(sent.id)
+      } catch (e) {
+        const err = e instanceof Error ? e.message : String(e)
+        return fail(`reply failed after ${sentIds.length} of ${chunks.length} chunk(s): ${err}`)
+      }
     }
   }
 
