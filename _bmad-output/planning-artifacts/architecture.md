@@ -1910,3 +1910,23 @@ bump 0.0.29 → 0.0.30。
 **测试。** vitest fake timers 覆盖 TypingHeartbeat：start 立刻 sendTyping + 推进 8s 再 sendTyping、stop 后不再调、stopAll 一次清全部、超 max 自停 + warn、重复 start 重置而不叠加。
 
 bump 0.0.30 → 0.0.31。
+
+### 34. "Allow always" 细粒度规则 (§20.1)
+
+**§20 现状。** "Allow always" 按钮把裸 `tool_name`（如 `Bash`）写进 `~/.claude/settings.json` 的 `permissions.allow`。之后**所有** `Bash` 调用都跳过 hook —— 包括 `Bash(rm -rf …)`。粒度太粗。
+
+**改动。** 写入前从 tool_input 推一个收紧的模式：
+
+- 抽出纯函数 `deriveAllowRule(toolName, inputPreview): string`
+  - `Bash` + `{command: "git status -s"}` → `Bash(git:*)`（取 command 第一个 whitespace 切的词，构造 `Tool(prefix:*)`）
+  - `Edit` / `Write` / `MultiEdit` + `{file_path: "/abs/path"}` → `Edit(/abs/path)`（精确）
+  - `NotebookEdit` + `{notebook_path}` → 同上
+  - 解析不出来 / 未知工具形状 → 退到裸 `<tool_name>`（不回退到比 §20 更松）
+- `handleButton` 'always' 分支调它取 `rule`，传给 `persistAllowRule(rule, ...)`；按钮 label 显示实际写入的 rule
+- `permission-hook.ts` 的 `settingsAllows` 已经接受 `Tool(...)` 形态（match `r.startsWith(${toolName}() && r.endsWith())`），不用动
+
+**失败回滚。** 如果推出来的 pattern 跟 CC 自己的解析格式不匹配（理论可能），后果只是 user 下次同工具又被弹一次提示（不是安全问题，UX 退化到 §20 之前），可以 user 手编 settings.json 改成更宽。
+
+**测试。** `deriveAllowRule` 纯函数覆盖：Bash 各种 command 输入、文件类工具的 file_path 输入、坏 JSON / 缺字段回退、未知工具回退。`handleButton` "Allow always" 实测写入 `Bash(git:*)` 而不是 `Bash`。
+
+bump 0.0.31 → 0.0.32。
