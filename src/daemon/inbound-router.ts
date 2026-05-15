@@ -135,13 +135,10 @@ async function handle(deps: InboundRouterDeps, msg: Message): Promise<void> {
     return
   }
 
-  // Architecture deltas §16: remember the last inbound's chat_id so
-  // permission-relay can route cc_permission_request buttons back here
-  // (instead of fanning out to every allowFrom user's DM).
-  conn.lastInboundChatId = msg.channelId
-  // Architecture deltas §27: timestamp it so isInboundFresh() can tell whether
-  // this workspace is still being driven from Discord.
-  conn.lastInboundTs = Date.now()
+  // Architecture deltas §35: enter the 'active' turn state. This also takes
+  // care of the §16 lastInboundChatId + §27 lastInboundTs fields kept for
+  // back-compat with isInboundFresh() callers.
+  conn.startTurn(msg.channelId)
   // Architecture deltas §24: store a short content preview for trace-thread
   // naming, and reset the per-turn active trace thread so the next
   // PostToolUse fire starts a fresh thread under this turn's reply.

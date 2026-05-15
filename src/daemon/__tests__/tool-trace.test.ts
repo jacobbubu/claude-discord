@@ -68,17 +68,26 @@ function makeConn(
   cwd: string,
   chatId: string | null,
   preview = 'hello',
-  // §27: a conn with a chat id is assumed freshly Discord-active unless the
-  // caller overrides lastInboundTs (e.g. to test the stale-drop path).
-  lastInboundTs: number | null = chatId != null ? Date.now() : null,
+  // §35: explicit "is in turn" knob. Defaults to true whenever a chat id was
+  // provided (the common "user just messaged me" case). Set false to test
+  // "conn that was once active but turn ended" — daemon should drop trace.
+  inTurn: boolean = chatId != null,
 ): Connection {
   const conn = new Connection({} as never)
   conn.workspace = 'work'
   conn.cwd = cwd
   conn.state = 'registered'
-  conn.lastInboundChatId = chatId
   conn.lastInboundPreview = preview
-  conn.lastInboundTs = lastInboundTs
+  if (chatId != null) {
+    if (inTurn) {
+      conn.startTurn(chatId) // sets lastInboundChatId + lastInboundTs + turnState=active
+    } else {
+      // Stale: a chat id is remembered but the turn has ended.
+      conn.lastInboundChatId = chatId
+      conn.lastInboundTs = Date.now() - 60 * 60_000
+      // turnState stays 'idle' — that's the §35 signal for "not in a turn"
+    }
+  }
   return conn
 }
 
@@ -137,10 +146,10 @@ describe('ToolTraceRelay.handle', () => {
     expect(g.created.length).toBe(0)
   })
 
-  it('§27: drops trace when the conn is bound but its inbound is stale (terminal-driven turn)', async () => {
+  it('§35: drops trace when the conn is bound but turn has ended (terminal-driven)', async () => {
     const reg = new WorkspaceRegistry()
-    // bound to a channel, but lastInboundTs is an hour ago → not Discord-active
-    const conn = makeConn('/work', 'parent-stale', 'old turn', Date.now() - 60 * 60_000)
+    // bound to a channel but turnState is idle → not in a Discord turn
+    const conn = makeConn('/work', 'parent-stale', 'old turn', /* inTurn */ false)
     reg.register('work', conn)
     const g = makeGateway()
     g.addParent('parent-stale', ChannelType.GuildText)

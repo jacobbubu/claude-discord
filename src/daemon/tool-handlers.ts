@@ -123,6 +123,11 @@ export type ToolContext = {
   /** §33: stopped on successful reply/edit_message/thread_reply so the
    *  "typing…" indicator doesn't outlive CC's response. */
   typingHeartbeat?: TypingHeartbeat
+  /** §35: notified on successful reply-class tool call. Daemon wires this to
+   *  the workspace conn's `startSunset()` so the turn moves from active →
+   *  sunset, and after the tail timer fires → idle (defers subsequent
+   *  permission/trace from CC's terminal-driven prompts to TUI). */
+  onReplyDelivered?: () => void
 }
 
 export type ToolOutcome =
@@ -305,6 +310,9 @@ export async function toolReply(
 
   // §33: a real reply landed — drop the typing indicator.
   ctx.typingHeartbeat?.stop(chatId)
+  // §35: enter the sunset tail so subsequent terminal-driven tool calls
+  // (after this turn winds down) get deferred to TUI / dropped from trace.
+  ctx.onReplyDelivered?.()
 
   const summary =
     sentIds.length === 1
@@ -355,6 +363,7 @@ export async function toolEditMessage(
     const edited = await msg.edit(text)
     // §33: edit also counts as "CC responded".
     ctx.typingHeartbeat?.stop(chatId)
+    ctx.onReplyDelivered?.() // §35
     return { ok: true, result: `edited (id: ${edited.id})` }
   } catch (e) {
     ctx.typingHeartbeat?.stop(chatId) // §33: also stop on edit failure
@@ -468,6 +477,7 @@ export async function toolThreadReply(
     const first = await thread.send(content)
     // §33: thread_reply also counts as "CC responded".
     ctx.typingHeartbeat?.stop(chatId)
+    ctx.onReplyDelivered?.() // §35
     return {
       ok: true,
       result: JSON.stringify({ thread_id: thread.id, message_id: first.id }),

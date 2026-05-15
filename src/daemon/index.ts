@@ -95,6 +95,10 @@ export async function runDaemon(): Promise<void> {
           paths,
           workspace,
           typingHeartbeat: typingHeartbeat ?? undefined,
+          // §35: on successful reply-class tool, slide the workspace's turn
+          // into sunset (30s tail) so subsequent terminal-driven tool calls
+          // get correctly deferred to TUI / dropped from trace.
+          onReplyDelivered: () => registry.get(workspace)?.startSunset(),
         }
         return await dispatchToolCall(ctx, tool, args)
       }
