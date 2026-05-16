@@ -29,6 +29,7 @@ import {
 import {
   startSocketServer,
   type CcPermissionRequestHandler,
+  type CcStopHandler,
   type CcToolTraceHandler,
   type PermissionRequestHandler,
   type ToolCallHandler,
@@ -98,7 +99,14 @@ export async function runDaemon(): Promise<void> {
           // §35: on successful reply-class tool, slide the workspace's turn
           // into sunset (30s tail) so subsequent terminal-driven tool calls
           // get correctly deferred to TUI / dropped from trace.
-          onReplyDelivered: () => registry.get(workspace)?.startSunset(),
+          // §36: a delivered reply also ends any cancel obligation — user got
+          // their response, /cancel doesn't need to keep denying tools.
+          onReplyDelivered: () => {
+            const c = registry.get(workspace)
+            if (!c) return
+            c.startSunset()
+            c.cancelPending = false
+          },
         }
         return await dispatchToolCall(ctx, tool, args)
       }
@@ -133,6 +141,19 @@ export async function runDaemon(): Promise<void> {
         /* no gateway — nothing we can do with a trace */
       }
 
+  // Architecture deltas §36: Stop hook → end §35 turn lifecycle precisely
+  // (skip the 30s sunset tail) and clear any /cancel flag now that the turn
+  // has actually finished. cwd lookup mirrors cc_permission_request routing.
+  const ccStopHandler: CcStopHandler = msg => {
+    const wsConn = registry.list().find(c => c.cwd === msg.cwd)
+    if (!wsConn) {
+      log.debug(`cc_stop: no workspace matched cwd=${msg.cwd}`)
+      return
+    }
+    if (typingHeartbeat) typingHeartbeat.stopByWorkspace(wsConn.workspace ?? '')
+    wsConn.clearTurn()
+  }
+
   const sockServer = startSocketServer(
     paths,
     registry,
@@ -140,6 +161,7 @@ export async function runDaemon(): Promise<void> {
     permissionHandler,
     ccPermissionHandler,
     ccToolTraceHandler,
+    ccStopHandler,
   )
 
   if (gateway) {

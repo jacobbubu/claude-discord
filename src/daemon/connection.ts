@@ -59,6 +59,11 @@ export class Connection {
   /** Deltas §35: turn lifecycle state machine — idle / active / sunset. */
   turnState: TurnState = 'idle'
   private sunsetTimer: ReturnType<typeof setTimeout> | null = null
+  /** Deltas §36: user-requested cancel for the current turn. Set by /cancel
+   *  slash command; checked by permission-relay so the next permission-gated
+   *  tool gets denied with a reason. Cleared on startTurn (new turn = new
+   *  account) and on onReplyDelivered / cc_stop (turn ended). */
+  cancelPending: boolean = false
 
   constructor(public readonly socket: Socket) {}
 
@@ -100,6 +105,10 @@ export class Connection {
       clearTimeout(this.sunsetTimer)
       this.sunsetTimer = null
     }
+    // §36: a new turn opens a fresh account — any cancel request from a
+    // previous turn that never actually fired (e.g. user clicked /cancel after
+    // CC already had finished) shouldn't carry over.
+    this.cancelPending = false
   }
 
   /**
@@ -120,13 +129,18 @@ export class Connection {
     ;(this.sunsetTimer as unknown as { unref?: () => void }).unref?.()
   }
 
-  /** Force-end the current turn (used by tests; rarely needed otherwise). */
+  /**
+   * Force-end the current turn. Used by §36 Stop hook (CC's turn actually
+   * ended; no need to wait out the sunset tail) and by tests.
+   */
   clearTurn(): void {
     this.turnState = 'idle'
     if (this.sunsetTimer) {
       clearTimeout(this.sunsetTimer)
       this.sunsetTimer = null
     }
+    // §36: turn is over → drop any pending cancel; it's moot now.
+    this.cancelPending = false
   }
 
   /**

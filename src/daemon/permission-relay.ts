@@ -141,6 +141,27 @@ export class PermissionRelay {
       return
     }
 
+    // Architecture deltas §36: user requested cancel for this turn — short-
+    // circuit the permission flow with a deny + reason. No Discord round-trip,
+    // no pending pool entry. Flag stays set so subsequent tool attempts in the
+    // same turn also get denied (until reply / Stop hook clears it).
+    if (wsConn && wsConn.cancelPending) {
+      log.info(`cc_permission_request ${msg.request_id}: workspace ${wsConn.workspace} cancelPending — denying`)
+      try {
+        conn.send({
+          type: 'permission',
+          v: PROTOCOL_VERSION,
+          request_id: msg.request_id,
+          behavior: 'deny',
+          reason:
+            '用户已在 Discord 取消本回合。立刻停止当前工作，调一次 plugin:claude-discord:reply 发"已取消"，然后结束 turn。不要再调任何其他 tool。',
+        })
+      } catch (e) {
+        log.warn(`cc_permission_request ${msg.request_id}: cancel deny write failed: ${e}`)
+      }
+      return
+    }
+
     const sourceChatId = wsConn?.lastInboundChatId ?? null
     return this.handleRequest(
       { kind: 'hook', conn },

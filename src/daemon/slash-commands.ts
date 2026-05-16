@@ -111,6 +111,13 @@ export function buildCommandList(workspaces: string[] = []) {
         if (hasChoices) o.addChoices(...choices)
         return o
       }),
+    // Architecture deltas §36: ask CC to stop the current turn. Acts on this
+    // channel's bound workspace; takes effect at CC's next permission-gated
+    // tool call. No args.
+    new SlashCommandBuilder()
+      .setName('cancel')
+      .setDescription("Cancel this channel's workspace's current turn (soft — at next tool)")
+      .setContexts(...ALL_CONTEXTS),
   ].map(c => c.toJSON())
 }
 
@@ -223,6 +230,8 @@ async function handle(deps: SlashDeps, i: Interaction): Promise<void> {
       return handleWhich(deps, i)
     case 'recent':
       return handleRecent(deps, i)
+    case 'cancel':
+      return handleCancel(deps, i)
   }
 }
 
@@ -427,6 +436,39 @@ async function handleWhich(deps: SlashDeps, i: ChatInputCommandInteraction): Pro
   await i.reply({
     content: `bound to \`${route.workspace}\` — ${status}, switched <t:${switched}:f>`,
     ephemeral: true,
+  })
+}
+
+/**
+ * Architecture deltas §36: /cancel — mark the channel's bound workspace as
+ * cancel-pending. Permission-relay will deny the next permission-gated tool
+ * call with a reason that tells the model to stop and reply "已取消". Soft
+ * cancel: does not interrupt an in-flight tool, does not affect pure-thinking
+ * states.
+ */
+async function handleCancel(deps: SlashDeps, i: ChatInputCommandInteraction): Promise<void> {
+  const route = deps.routing.get(i.channelId)
+  if (!route) {
+    await i.reply({ content: '此 channel 还没绑定 workspace（先 `/use <name>`）。', ephemeral: true })
+    return
+  }
+  const conn = deps.registry.get(route.workspace)
+  if (!conn) {
+    await i.reply({ content: `\`${route.workspace}\` 当前离线，无法取消。`, ephemeral: true })
+    return
+  }
+  if (!conn.isInTurn()) {
+    await i.reply({ content: `\`${route.workspace}\` 当前没有进行中的回合可取消。`, ephemeral: true })
+    return
+  }
+  if (conn.cancelPending) {
+    await i.reply({ content: `\`${route.workspace}\` 已在取消中（等下一次工具调用生效）。`, ephemeral: true })
+    return
+  }
+  conn.cancelPending = true
+  log.info(`/cancel: workspace ${route.workspace} marked cancelPending`)
+  await i.reply({
+    content: `🛑 已请求取消 \`${route.workspace}\` 当前回合 — 下一次工具调用前生效（已在跑的工具拦不住）。`,
   })
 }
 

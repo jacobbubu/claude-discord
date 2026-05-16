@@ -46,6 +46,15 @@ export type CcToolTraceHandler = (
   msg: import('../protocol/schema.ts').CcToolTraceMsg,
 ) => Promise<void> | void
 
+/**
+ * Architecture deltas §36: Stop hook fires once per CC turn end. Daemon uses
+ * it to drop the workspace to idle immediately (skipping §35 sunset tail) and
+ * to clear any pending /cancel flag. Anonymous, fire-and-forget.
+ */
+export type CcStopHandler = (
+  msg: import('../protocol/schema.ts').CcStopMsg,
+) => Promise<void> | void
+
 export type SocketServer = {
   close(): Promise<void>
 }
@@ -69,6 +78,10 @@ const noopCcToolTrace: CcToolTraceHandler = () => {
   /* deltas §24 default — no tool trace handler wired */
 }
 
+const noopCcStop: CcStopHandler = () => {
+  /* deltas §36 default — no Stop hook handler wired */
+}
+
 export function startSocketServer(
   paths: Paths,
   registry: WorkspaceRegistry,
@@ -76,6 +89,7 @@ export function startSocketServer(
   handlePermissionRequest: PermissionRequestHandler = noopPermission,
   handleCcPermissionRequest: CcPermissionRequestHandler = noopCcPermission,
   handleCcToolTrace: CcToolTraceHandler = noopCcToolTrace,
+  handleCcStop: CcStopHandler = noopCcStop,
 ): SocketServer {
   if (existsSync(paths.socketPath)) {
     try {
@@ -93,6 +107,7 @@ export function startSocketServer(
       handlePermissionRequest,
       handleCcPermissionRequest,
       handleCcToolTrace,
+      handleCcStop,
     ),
   )
 
@@ -146,6 +161,7 @@ function onSocket(
   handlePermissionRequest: PermissionRequestHandler,
   handleCcPermissionRequest: CcPermissionRequestHandler,
   handleCcToolTrace: CcToolTraceHandler,
+  handleCcStop: CcStopHandler,
 ): void {
   const conn = new Connection(socket)
   const buf = new LineBuffer()
@@ -163,6 +179,7 @@ function onSocket(
         handlePermissionRequest,
         handleCcPermissionRequest,
         handleCcToolTrace,
+        handleCcStop,
       )
     }
   })
@@ -184,6 +201,7 @@ function handleLine(
   handlePermissionRequest: PermissionRequestHandler,
   handleCcPermissionRequest: CcPermissionRequestHandler,
   handleCcToolTrace: CcToolTraceHandler,
+  handleCcStop: CcStopHandler,
 ): void {
   conn.touch()
 
@@ -235,6 +253,14 @@ function handleLine(
       // Fire-and-forget — no reply on conn; hook exits as soon as send ack'd.
       void Promise.resolve(handleCcToolTrace(msg)).catch(e =>
         log.warn(`cc_tool_trace handler error: ${e}`),
+      )
+      return
+    case 'cc_stop':
+      // Anonymous conn from `claude-discord-stop-hook` (deltas §36). Fires once
+      // per CC turn end; daemon force-ends §35 turn lifecycle to idle and drops
+      // any pending /cancel flag.
+      void Promise.resolve(handleCcStop(msg)).catch(e =>
+        log.warn(`cc_stop handler error: ${e}`),
       )
       return
     default:

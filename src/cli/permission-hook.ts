@@ -170,7 +170,9 @@ async function readStdin(): Promise<string> {
   })
 }
 
-type DiscordVerdict = 'allow' | 'deny' | 'defer'
+type DiscordVerdict =
+  | { kind: 'allow' | 'deny'; reason?: string }
+  | { kind: 'defer' }
 
 async function askDiscord(toolName: string, toolInput: unknown): Promise<DiscordVerdict> {
   const paths = resolvePaths()
@@ -223,7 +225,10 @@ async function askDiscord(toolName: string, toolInput: unknown): Promise<Discord
           try {
             sock.end()
           } catch {}
-          resolve(msg.behavior)
+          // Architecture deltas §36: deny may carry a reason (cancel path).
+          // Pass it through so CC sees `permissionDecisionReason` and the
+          // model gets the instruction in the tool-result feedback loop.
+          resolve({ kind: msg.behavior, reason: msg.reason })
         }
         // Architecture deltas §27: daemon decided this workspace isn't
         // Discord-active right now — let CC's TUI prompt handle it.
@@ -232,7 +237,7 @@ async function askDiscord(toolName: string, toolInput: unknown): Promise<Discord
           try {
             sock.end()
           } catch {}
-          resolve('defer')
+          resolve({ kind: 'defer' })
         }
       }
     })
@@ -285,12 +290,12 @@ async function main(): Promise<void> {
 
   try {
     const verdict = await askDiscord(toolName, payload.tool_input ?? {})
-    if (verdict === 'defer') {
+    if (verdict.kind === 'defer') {
       // §27: daemon says this workspace isn't Discord-active — use CC's TUI.
       emitDecision('ask', 'permission-hook: daemon deferred (workspace not Discord-active)')
       return
     }
-    emitDecision(verdict)
+    emitDecision(verdict.kind, verdict.reason)
   } catch (e) {
     // Daemon unreachable / timeout / etc — let CC handle via its normal
     // gate (TUI prompt). Don't auto-deny: that would block all tools when

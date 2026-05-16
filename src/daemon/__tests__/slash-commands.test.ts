@@ -519,6 +519,54 @@ describe('slash-commands', () => {
     })
   })
 
+  describe('/cancel (§36)', () => {
+    it('rejects unbound channel', async () => {
+      const { interaction, reply } = makeChatInputInteraction({ commandName: 'cancel' })
+      dispatch(interaction)
+      await new Promise(r => setImmediate(r))
+      expect(replyContent(reply)).toMatch(/还没绑定/)
+    })
+
+    it('rejects when bound workspace is offline', async () => {
+      routing.set('c-1', 'ghost', Date.now())
+      const { interaction, reply } = makeChatInputInteraction({ commandName: 'cancel' })
+      dispatch(interaction)
+      await new Promise(r => setImmediate(r))
+      expect(replyContent(reply)).toMatch(/离线/)
+    })
+
+    it('rejects when workspace has no active turn (idle)', async () => {
+      registerWorkspace('foo')
+      routing.set('c-1', 'foo', Date.now())
+      const { interaction, reply } = makeChatInputInteraction({ commandName: 'cancel' })
+      dispatch(interaction)
+      await new Promise(r => setImmediate(r))
+      expect(replyContent(reply)).toMatch(/没有进行中的回合/)
+    })
+
+    it('sets cancelPending when workspace is mid-turn and acks', async () => {
+      const conn = registerWorkspace('foo')
+      conn.startTurn('c-1')
+      routing.set('c-1', 'foo', Date.now())
+      const { interaction, reply } = makeChatInputInteraction({ commandName: 'cancel' })
+      dispatch(interaction)
+      await new Promise(r => setImmediate(r))
+      expect(conn.cancelPending).toBe(true)
+      expect(replyContent(reply)).toMatch(/已请求取消/)
+    })
+
+    it('idempotent — repeat /cancel says "already cancelling"', async () => {
+      const conn = registerWorkspace('foo')
+      conn.startTurn('c-1')
+      conn.cancelPending = true
+      routing.set('c-1', 'foo', Date.now())
+      const { interaction, reply } = makeChatInputInteraction({ commandName: 'cancel' })
+      dispatch(interaction)
+      await new Promise(r => setImmediate(r))
+      expect(replyContent(reply)).toMatch(/已在取消中/)
+    })
+  })
+
   describe('autocomplete', () => {
     it('responds with empty array for non-completable command', async () => {
       const { interaction, respond } = makeAutocompleteInteraction({ commandName: 'list' })

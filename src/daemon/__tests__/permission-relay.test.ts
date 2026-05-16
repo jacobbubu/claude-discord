@@ -770,6 +770,74 @@ describe('PermissionRelay.handleCcRequest §16 source-bound routing', () => {
     expect(dms.length).toBe(1)
     relay.stop()
   })
+
+  it('§36: cancelPending → direct deny + reason; no Discord round-trip', async () => {
+    const { relay, registry, channelSends, dms } = setupRelayWithChannelFetch()
+    const sock = new FakeSocket()
+    const conn = new Connection(sock as never)
+    conn.workspace = 'free-research'
+    conn.cwd = '/Users/x/free-research'
+    conn.startTurn('cg-foo') // active turn
+    conn.cancelPending = true // user clicked /cancel
+    conn.state = 'registered'
+    registry.register('free-research', conn)
+
+    const hookSock = new FakeSocket()
+    const hookConn = new Connection(hookSock as never)
+    await relay.handleCcRequest(hookConn, {
+      type: 'cc_permission_request',
+      v: 1,
+      request_id: 'fghij',
+      tool_name: 'Bash',
+      description: 'run sleep 60',
+      input_preview: '{"command":"sleep 60"}',
+      cwd: '/Users/x/free-research',
+    })
+
+    // No button DM, no channel send — straight deny on the hook conn.
+    expect(channelSends.length).toBe(0)
+    expect(dms.length).toBe(0)
+    expect(hookSock.writes.length).toBe(1)
+    const sent = JSON.parse(hookSock.writes[0]!.trim())
+    expect(sent.type).toBe('permission')
+    expect(sent.request_id).toBe('fghij')
+    expect(sent.behavior).toBe('deny')
+    expect(sent.reason).toMatch(/取消/)
+    // Flag stays set so a follow-up tool attempt also gets denied.
+    expect(conn.cancelPending).toBe(true)
+    relay.stop()
+  })
+
+  it('§36: cancelPending denies repeatedly until cleared (flag is sticky within turn)', async () => {
+    const { relay, registry } = setupRelayWithChannelFetch()
+    const sock = new FakeSocket()
+    const conn = new Connection(sock as never)
+    conn.workspace = 'free-research'
+    conn.cwd = '/Users/x/free-research'
+    conn.startTurn('cg-foo')
+    conn.cancelPending = true
+    conn.state = 'registered'
+    registry.register('free-research', conn)
+
+    const tryOnce = async (request_id: string) => {
+      const hookSock = new FakeSocket()
+      const hookConn = new Connection(hookSock as never)
+      await relay.handleCcRequest(hookConn, {
+        type: 'cc_permission_request',
+        v: 1,
+        request_id,
+        tool_name: 'Bash',
+        description: 'd',
+        input_preview: '{}',
+        cwd: '/Users/x/free-research',
+      })
+      return JSON.parse(hookSock.writes[0]!.trim())
+    }
+
+    expect((await tryOnce('aabbc')).behavior).toBe('deny')
+    expect((await tryOnce('ddeef')).behavior).toBe('deny')
+    relay.stop()
+  })
 })
 
 // ---------------------------------------------------------------------------
