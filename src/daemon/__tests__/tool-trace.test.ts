@@ -5,7 +5,8 @@ import { PROTOCOL_VERSION } from '../../protocol/version.ts'
 import { Connection } from '../connection.ts'
 import type { DiscordGateway } from '../discord-gateway.ts'
 import { WorkspaceRegistry } from '../registry.ts'
-import { formatBody, ToolTraceRelay } from '../tool-trace.ts'
+import { buildDiffText } from '../diff-image-renderer.ts'
+import { formatBody, ToolTraceRelay, type DiffImageRenderer } from '../tool-trace.ts'
 
 function makeTrace(overrides: Partial<CcToolTraceMsg> = {}): CcToolTraceMsg {
   return {
@@ -323,5 +324,154 @@ describe('formatBody', () => {
     const body = formatBody(makeTrace({ tool_input: huge, tool_response: huge }))
     expect(body.length).toBeLessThanOrEqual(4000)
     expect(body).toContain('(truncated')
+  })
+})
+
+describe('buildDiffText (deltas §39)', () => {
+  it('Edit input → unified diff with - and + prefixed lines', () => {
+    const out = buildDiffText(
+      'Edit',
+      JSON.stringify({
+        file_path: '/src/foo.ts',
+        old_string: 'const x = 1\nconst y = 2',
+        new_string: 'const x = 10\nconst y = 20',
+      }),
+    )
+    expect(out).not.toBeNull()
+    expect(out).toContain('--- a/src/foo.ts')
+    expect(out).toContain('+++ b/src/foo.ts')
+    expect(out).toContain('-const x = 1')
+    expect(out).toContain('+const x = 10')
+    expect(out).toContain('-const y = 2')
+    expect(out).toContain('+const y = 20')
+  })
+
+  it('MultiEdit input → accumulates each edit as its own hunk', () => {
+    const out = buildDiffText(
+      'MultiEdit',
+      JSON.stringify({
+        file_path: '/src/a.ts',
+        edits: [
+          { old_string: 'foo', new_string: 'bar' },
+          { old_string: 'baz', new_string: 'qux' },
+        ],
+      }),
+    )
+    expect(out).not.toBeNull()
+    expect(out).toContain('-foo')
+    expect(out).toContain('+bar')
+    expect(out).toContain('-baz')
+    expect(out).toContain('+qux')
+  })
+
+  it('Write input → diff from /dev/null with + prefixed lines', () => {
+    const out = buildDiffText(
+      'Write',
+      JSON.stringify({ file_path: '/src/new.ts', content: 'line1\nline2' }),
+    )
+    expect(out).not.toBeNull()
+    expect(out).toContain('--- /dev/null')
+    expect(out).toContain('+++ b/src/new.ts')
+    expect(out).toContain('+line1')
+    expect(out).toContain('+line2')
+  })
+
+  it('non-Edit/MultiEdit/Write tool → null', () => {
+    expect(buildDiffText('Bash', JSON.stringify({ command: 'ls' }))).toBeNull()
+    expect(buildDiffText('Read', JSON.stringify({ file_path: '/x' }))).toBeNull()
+    expect(buildDiffText('Grep', JSON.stringify({ pattern: 'foo' }))).toBeNull()
+  })
+
+  it('missing file_path → null', () => {
+    expect(buildDiffText('Edit', JSON.stringify({ old_string: 'a', new_string: 'b' }))).toBeNull()
+  })
+
+  it('Edit missing old_string or new_string → null', () => {
+    expect(buildDiffText('Edit', JSON.stringify({ file_path: '/x' }))).toBeNull()
+    expect(buildDiffText('Edit', JSON.stringify({ file_path: '/x', old_string: 'a' }))).toBeNull()
+  })
+
+  it('MultiEdit with empty edits array → null', () => {
+    expect(buildDiffText('MultiEdit', JSON.stringify({ file_path: '/x', edits: [] }))).toBeNull()
+  })
+
+  it('malformed JSON input → null', () => {
+    expect(buildDiffText('Edit', 'not json at all')).toBeNull()
+  })
+})
+
+describe('ToolTraceRelay diff image integration (deltas §39)', () => {
+  it('Edit trace → calls renderer; attaches PNG + sets embed.image', async () => {
+    const reg = new WorkspaceRegistry()
+    const conn = makeConn('/work', 'parent-1', 'foo')
+    reg.register('work', conn)
+    const g = makeGateway()
+    g.addParent('parent-1', ChannelType.GuildText)
+
+    const fakePath = '/tmp/fake-diff.png'
+    const renderer: DiffImageRenderer = async () => fakePath
+    const relay = new ToolTraceRelay(g.gateway, reg, renderer)
+    await relay.handle(
+      makeTrace({
+        tool_name: 'Edit',
+        tool_input: JSON.stringify({
+          file_path: '/x.ts',
+          old_string: 'a',
+          new_string: 'b',
+        }),
+      }),
+    )
+
+    expect(g.sent.length).toBe(1)
+    const payload = g.sent[0]!.payload as { embeds: unknown[]; files?: unknown[] }
+    expect(payload.files?.length).toBe(1)
+    // embed.image.url should reference the attachment by basename
+    const embedJson = (payload.embeds[0] as { toJSON: () => Record<string, unknown> }).toJSON()
+    expect(embedJson.image).toBeDefined()
+    expect((embedJson.image as { url: string }).url).toContain('attachment://fake-diff.png')
+  })
+
+  it('Bash trace → renderer returns null; no files, no image', async () => {
+    const reg = new WorkspaceRegistry()
+    const conn = makeConn('/work', 'parent-1', 'foo')
+    reg.register('work', conn)
+    const g = makeGateway()
+    g.addParent('parent-1', ChannelType.GuildText)
+
+    let renderCalls = 0
+    const renderer: DiffImageRenderer = async () => {
+      renderCalls++
+      return null
+    }
+    const relay = new ToolTraceRelay(g.gateway, reg, renderer)
+    await relay.handle(makeTrace({ tool_name: 'Bash' }))
+
+    expect(g.sent.length).toBe(1)
+    const payload = g.sent[0]!.payload as { embeds: unknown[]; files?: unknown[] }
+    expect(payload.files).toBeUndefined()
+    expect(renderCalls).toBe(1) // renderer is still invoked but returns null for Bash
+  })
+
+  it('renderer throws → embed still sent, no files', async () => {
+    const reg = new WorkspaceRegistry()
+    const conn = makeConn('/work', 'parent-1', 'foo')
+    reg.register('work', conn)
+    const g = makeGateway()
+    g.addParent('parent-1', ChannelType.GuildText)
+
+    const renderer: DiffImageRenderer = async () => {
+      throw new Error('silicon exploded')
+    }
+    const relay = new ToolTraceRelay(g.gateway, reg, renderer)
+    await relay.handle(
+      makeTrace({
+        tool_name: 'Edit',
+        tool_input: JSON.stringify({ file_path: '/x', old_string: 'a', new_string: 'b' }),
+      }),
+    )
+
+    expect(g.sent.length).toBe(1)
+    const payload = g.sent[0]!.payload as { embeds: unknown[]; files?: unknown[] }
+    expect(payload.files).toBeUndefined()
   })
 })
