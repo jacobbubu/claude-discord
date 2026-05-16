@@ -122,3 +122,32 @@ describe('Connection turn lifecycle (deltas §35)', () => {
     expect(c.state).toBe('closed')
   })
 })
+
+describe('Connection.cancelPending (deltas §36)', () => {
+  it('defaults to false', () => {
+    expect(makeConn().cancelPending).toBe(false)
+  })
+
+  it('startTurn() clears a pre-existing cancelPending (new turn = new account)', () => {
+    const c = makeConn()
+    c.cancelPending = true
+    c.startTurn('chat-A')
+    expect(c.cancelPending).toBe(false)
+  })
+
+  it('clearTurn() clears cancelPending (Stop hook path)', () => {
+    const c = makeConn()
+    c.startTurn('chat-A')
+    c.cancelPending = true
+    c.clearTurn()
+    expect(c.cancelPending).toBe(false)
+  })
+
+  it('startSunset() does NOT clear cancelPending (cancel survives until reply / Stop)', () => {
+    const c = makeConn()
+    c.startTurn('chat-A')
+    c.cancelPending = true
+    c.startSunset()
+    expect(c.cancelPending).toBe(true)
+  })
+})

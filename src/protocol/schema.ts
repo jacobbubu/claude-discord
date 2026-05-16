@@ -122,6 +122,10 @@ export const PermissionSchema = z.object({
   v: versionField,
   request_id: z.string().regex(/^[a-km-z]{5}$/),
   behavior: z.enum(['allow', 'deny']),
+  // Architecture deltas §36: optional human-readable reason. daemon sets it
+  // when denying due to user-driven cancel (/cancel slash); the hook surfaces
+  // it as `permissionDecisionReason` so CC feeds it back to the model.
+  reason: z.string().optional(),
 })
 export type PermissionMsg = z.infer<typeof PermissionSchema>
 
@@ -184,6 +188,19 @@ export const CcPermissionDeferSchema = z.object({
 export type CcPermissionDeferMsg = z.infer<typeof CcPermissionDeferSchema>
 
 /**
+ * Architecture deltas §36: Stop hook subprocess fires once when CC finishes a
+ * turn. Lets daemon resolve §35 turn lifecycle to idle immediately (skip the
+ * 30s sunset tail) and clear any cancelPending flag tied to the turn that
+ * just ended. Anonymous one-shot conn (no register, no reply, fire-and-forget).
+ */
+export const CcStopSchema = z.object({
+  type: z.literal('cc_stop'),
+  v: versionField,
+  cwd: z.string(),
+})
+export type CcStopMsg = z.infer<typeof CcStopSchema>
+
+/**
  * Discriminated union of every message type. Use this for parsing arbitrary
  * NDJSON lines into typed messages.
  */
@@ -202,5 +219,6 @@ export const WireSchema = z.discriminatedUnion('type', [
   CcPermissionRequestSchema,
   CcToolTraceSchema,
   CcPermissionDeferSchema,
+  CcStopSchema,
 ])
 export type WireMsg = z.infer<typeof WireSchema>

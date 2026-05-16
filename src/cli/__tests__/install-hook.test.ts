@@ -178,3 +178,48 @@ describe('addHookToSettings — PostToolUse event (deltas §24)', () => {
     expect(settings.hooks!.PostToolUse).toBeUndefined()
   })
 })
+
+describe('addHookToSettings — Stop event (deltas §36)', () => {
+  const PRE = 'bun run /tmp/permission-hook.ts'
+  const STOP = 'bun run /tmp/stop-hook.ts'
+
+  it('creates Stop block without touching PreToolUse', () => {
+    const afterPre = addHookToSettings({}, PRE).settings
+    const { settings, changed } = addHookToSettings(afterPre, STOP, 5, 'Stop')
+    expect(changed).toBe(true)
+    expect(settings.hooks!.PreToolUse![0]!.hooks[0]!.command).toBe(PRE)
+    expect(settings.hooks!.Stop![0]!.hooks[0]!.command).toBe(STOP)
+    expect(settings.hooks!.Stop![0]!.hooks[0]!.timeout).toBe(5)
+  })
+
+  it('is idempotent within Stop event', () => {
+    const first = addHookToSettings({}, STOP, 5, 'Stop')
+    const second = addHookToSettings(first.settings, STOP, 5, 'Stop')
+    expect(second.changed).toBe(false)
+  })
+
+  it('coexists with other Stop hooks (e.g. cmux)', () => {
+    const before = {
+      hooks: {
+        Stop: [{ matcher: '', hooks: [{ type: 'command', command: 'cmux stop' }] }],
+      },
+    }
+    const { settings } = addHookToSettings(before, STOP, 5, 'Stop')
+    const stopBlock = settings.hooks!.Stop![0]!
+    expect(stopBlock.hooks.length).toBe(2)
+    expect(stopBlock.hooks[0]!.command).toBe('cmux stop')
+    expect(stopBlock.hooks[1]!.command).toBe(STOP)
+  })
+
+  it('uninstall Stop leaves PreToolUse + PostToolUse intact', () => {
+    const POST = 'bun run /tmp/post-tool-use-hook.ts'
+    let s = addHookToSettings({}, PRE).settings
+    s = addHookToSettings(s, POST, 5, 'PostToolUse').settings
+    s = addHookToSettings(s, STOP, 5, 'Stop').settings
+    const { settings, changed } = removeHookFromSettings(s, STOP, 'Stop')
+    expect(changed).toBe(true)
+    expect(settings.hooks!.PreToolUse).toBeDefined()
+    expect(settings.hooks!.PostToolUse).toBeDefined()
+    expect(settings.hooks!.Stop).toBeUndefined()
+  })
+})

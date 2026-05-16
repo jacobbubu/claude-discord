@@ -1973,3 +1973,62 @@ bump 0.0.31 → 0.0.32。
 - ToolTraceRelay 同
 
 bump 0.0.32 → 0.0.33。
+
+### 36. Discord 端取消当前回合 — PreToolUse 软取消 + Stop hook 回合精确结束
+
+**背景。** 当前 Discord 用户只能等 CC 跑完，没有 cancel 入口。研究过 SIGINT（实测整 kill CC 丢会话）和 tmux pty 注入 Esc（实测有效但要求 CC 跑在 daemon 可访问的 pty 内，不是默认形态），都不可接受为默认方案。可行的"软取消"路径是把 PreToolUse hook 的现有 daemon 往返当 cancel 信号通道 —— 模型在下一次 permission-gated tool 调用前收到 deny + 理由，自停并发一条"已取消"。
+
+**触发。**
+
+- 新 slash command `/cancel`（无参，对当前 channel 绑定的 workspace 生效）。Workspace 不在 turn 中（`isInTurn()` false）→ 回 "没有正在进行的回合可取消"；在 turn 中 → 置 `conn.cancelPending = true`，回 "已请求取消，下一次工具调用前生效"。
+- 可选 v2：bot 自己 reply 上 react ❌ 同效。先做 slash，react 留独立 issue。
+
+**daemon 端。**
+
+- `Connection` 加 `cancelPending: boolean = false`。
+- `startTurn(chatId)` 内部清 `cancelPending`（新 turn 开新账）。
+- `socket-server` / `permission-relay` 处理 `cc_permission_request` 时优先检查 `conn.cancelPending`：若 true → 直接回 `permission { behavior:'deny', reason:'用户已在 Discord 取消本回合。立刻停止当前工作，调一次 plugin:claude-discord:reply 发"已取消"，然后结束 turn。不要再调任何其他 tool。' }`，**不弹 Discord 按钮**，**不清 flag**（让模型万一继续别的 tool 时还会被拦）。
+- `onReplyDelivered` 钩到 cancel 清理：CC 发了 reply（不论是"已取消"还是别的）→ `cancelPending = false`（用户拿到回应，cancel 任务终结）。
+- `Stop hook`（见下）触发时也清 flag 兜底。
+- `conn.close()` 不用特别清，flag 跟 conn 一起没。
+
+**schema 改动。**
+
+- `PermissionSchema` 加 optional `reason: z.string()`。daemon→plugin/hook 的 deny 都可以带 reason；现有逻辑（用户在 Discord 点 deny）不带，行为不变。
+- `permission-hook.ts` `askDiscord` 返回类型扩成 `{behavior, reason?}`，传到 `emitDecision(decision, reason)` 把 reason 落到 `permissionDecisionReason`（CC 已经会把这字段当工具结果喂回模型）。
+
+**Stop hook（独立增益，捎带做）。**
+
+- 新文件 `src/cli/stop-hook.ts`，跟 `post-tool-use-hook.ts` 同骨架。CC 在 turn 结束时调一次，发 `cc_stop { workspace_cwd }` 给 daemon。
+- daemon 收 `cc_stop` → 找对应 conn → `conn.clearTurn()` 立刻进 idle（跳过 §35 30s sunset 兜底），并清 `cancelPending`。
+- `install-hook.ts` 增加 `Stop` 槽位写入（同 `PreToolUse` / `PostToolUse` 的结构）。
+- 独立价值：§35 sunset 兜底从 30s 收紧到 CC 实际 turn 结束那一刻。和 cancel 没强耦合，可分两个 PR。
+
+**已知边界（设计明示）。**
+
+- CC 在纯 thinking、不调 tool 时 hook 不触发，cancel 等到下一次工具调用才生效。如果模型生成一段长 reasoning 不调任何 tool 就发了 final reply，cancel 完全无效 —— 此场景接受。
+- 模型拿到 deny reason 后**多数情况**会照办（CC 对 PreToolUse deny 的标准行为是把 reason 当工具结果喂回模型）。极端情况下模型可能继续尝试别的 tool，flag 保留状态会持续 deny 直到 reply / Stop。
+- 已经在跑的 tool 拦不住（比如 `Bash(sleep 60)`）。只能拦未来的。
+- 不影响 §35 turn lifecycle，cancel 只是给 turn 加一个"快结束"的额外信号。
+
+**实施单元。**
+
+- `Connection`: 加 `cancelPending` 字段；`startTurn` 内清；导出 `isCancelPending()` getter（测试用）。
+- `permission-relay.ts handleCcRequest`: 在 `isInTurn()` 分支内、向 Discord 弹按钮之前，加 `if (wsConn.cancelPending) { sendCancelDeny(); return }`。
+- `tool-handlers.ts` onReplyDelivered 链上加 `conn.cancelPending = false`。
+- `schema.ts` PermissionSchema 加 reason；versioned ndjson 自动向后兼容。
+- `permission-hook.ts` `askDiscord` 提升返回到 `{behavior, reason?}`；emitDecision 透传 reason。
+- `slash-commands.ts` 注册 `/cancel`；命中时找 routing → workspace → conn → 置 flag + 回应。
+- `stop-hook.ts` + `cc_stop` 协议 + daemon handler + `install-hook.ts` 写入。
+- `discord-gateway.ts` slash 注册数从 6 → 7。
+
+**测试。**
+
+- `Connection.cancelPending`: startTurn 清，conn.close 跟着 GC（间接）。
+- `permission-relay handleCcRequest`: cancelPending=true → 直接 deny + reason；不进 pending pool；不发 Discord 按钮（mock gateway 断言 send 未调用）。
+- `permission-hook askDiscord`: daemon 回 deny+reason → emitDecision 输出 reason 到 stdout JSON。
+- slash `/cancel`: 命中 active conn → 置 flag，回 ack；命中 idle conn → 不置 flag，回提示；channel 没绑 workspace → 回引导。
+- Stop hook: spawn stop-hook.ts → daemon 收 cc_stop → 对应 conn 进 idle、cancelPending 清；mock socket 收 EPIPE → hook 0 退出（不 block CC）。
+- 端到端流转（mock CC）：startTurn → cancelPending=true → 模拟 permission-hook 调用 → 收 deny+reason → onReplyDelivered → cancelPending 清 → 二次 permission 正常走 Discord 按钮。
+
+bump 0.0.33 → 0.0.34。

@@ -27,6 +27,15 @@ export function resolvePostToolUseHookCommand(): string {
   return `bun run ${join(here, 'post-tool-use-hook.ts')}`
 }
 
+/**
+ * Architecture deltas §36: stop-hook.ts for precise §35 turn-end signal +
+ * cancel cleanup.
+ */
+export function resolveStopHookCommand(): string {
+  const here = import.meta.dir
+  return `bun run ${join(here, 'stop-hook.ts')}`
+}
+
 const HOOK_TIMEOUT_S = 3700 // 1h + slack — matches PENDING_TTL_MS
 
 type HookEntry = {
@@ -140,40 +149,47 @@ function writeSettings(s: Settings): void {
   writeFileSync(SETTINGS_PATH, JSON.stringify(s, null, 2) + '\n')
 }
 
-// PostToolUse hook is fire-and-forget; 5s is plenty for socket round-trip.
+// PostToolUse / Stop hooks are fire-and-forget; 5s is plenty for socket round-trip.
 const POST_HOOK_TIMEOUT_S = 5
+const STOP_HOOK_TIMEOUT_S = 5
 
 export function installHook(): void {
   const preCmd = resolveHookCommand()
   const postCmd = resolvePostToolUseHookCommand()
+  const stopCmd = resolveStopHookCommand()
   let settings = readSettings()
   const pre = addHookToSettings(settings, preCmd, HOOK_TIMEOUT_S, 'PreToolUse')
   const post = addHookToSettings(pre.settings, postCmd, POST_HOOK_TIMEOUT_S, 'PostToolUse')
-  settings = post.settings
+  const stop = addHookToSettings(post.settings, stopCmd, STOP_HOOK_TIMEOUT_S, 'Stop')
+  settings = stop.settings
 
-  if (!pre.changed && !post.changed) {
-    log.info(`hooks already installed (Pre/Post)`)
+  if (!pre.changed && !post.changed && !stop.changed) {
+    log.info(`hooks already installed (Pre/Post/Stop)`)
     return
   }
   writeSettings(settings)
   if (pre.changed) log.info(`installed PreToolUse hook → ${preCmd}`)
   if (post.changed) log.info(`installed PostToolUse hook → ${postCmd}`)
+  if (stop.changed) log.info(`installed Stop hook → ${stopCmd}`)
   log.info(`edit ${SETTINGS_PATH} to remove or run \`claude-discord-bot uninstall-hook\``)
 }
 
 export function uninstallHook(): void {
   const preCmd = resolveHookCommand()
   const postCmd = resolvePostToolUseHookCommand()
+  const stopCmd = resolveStopHookCommand()
   let settings = readSettings()
   const pre = removeHookFromSettings(settings, preCmd, 'PreToolUse')
   const post = removeHookFromSettings(pre.settings, postCmd, 'PostToolUse')
-  settings = post.settings
+  const stop = removeHookFromSettings(post.settings, stopCmd, 'Stop')
+  settings = stop.settings
 
-  if (!pre.changed && !post.changed) {
+  if (!pre.changed && !post.changed && !stop.changed) {
     log.info(`hooks not present (nothing to remove)`)
     return
   }
   writeSettings(settings)
   if (pre.changed) log.info(`removed PreToolUse hook → ${preCmd}`)
   if (post.changed) log.info(`removed PostToolUse hook → ${postCmd}`)
+  if (stop.changed) log.info(`removed Stop hook → ${stopCmd}`)
 }
