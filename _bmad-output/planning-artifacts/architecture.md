@@ -2032,3 +2032,29 @@ bump 0.0.32 → 0.0.33。
 - 端到端流转（mock CC）：startTurn → cancelPending=true → 模拟 permission-hook 调用 → 收 deny+reason → onReplyDelivered → cancelPending 清 → 二次 permission 正常走 Discord 按钮。
 
 bump 0.0.33 → 0.0.34。
+
+### 37. Stop hook 触发时归档 trace thread
+
+**背景。** §24 trace thread 默认 `autoArchiveDuration: 60min`（Discord 允许的最短枚举），用户连续跑几个回合后顶上堆一串过期 trace thread。移动端开 channel 一眼看到的全是这堆。
+
+**改动。** §36 已经接上的 Stop hook 钩点上加一句归档：
+
+- `daemon/index.ts ccStopHandler` 内部，`wsConn.clearTurn()` 之后：
+  - `const tid = wsConn.activeTraceThreadId`
+  - 若 `tid != null` → 异步 `gateway.client.channels.fetch(tid).then(t => t?.setArchived?.(true))`，try/catch 吞错（thread 可能已 archived / 已删 / 权限丢失）
+  - `wsConn.activeTraceThreadId = null`（下回合开新 thread）
+
+**注意。**
+
+- 归档不删 thread：channel timeline 的 "Thread started" 卡片、thread 内容、搜索全部保留
+- 用户/bot 在已归档 thread 发新消息会自动 reopen —— Discord 默认行为，不阻止
+- Stop hook 没装 / 触发失败 → 退化到 60min 自动归档，不比现状差
+- bot 是 thread 创建者，归档不需要额外权限
+
+**测试。**
+
+- ccStopHandler 单元：mock 一个有 `setArchived` 的 thread 对象，断言被调用一次
+- thread 不存在 / setArchived 抛错 → ccStopHandler 仍然完成 clearTurn 流程
+- activeTraceThreadId 在归档后被清空
+
+bump 0.0.34 → 0.0.35。

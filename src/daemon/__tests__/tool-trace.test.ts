@@ -233,6 +233,82 @@ describe('ToolTraceRelay.handle', () => {
   })
 })
 
+describe('ToolTraceRelay.archiveThread (deltas §37)', () => {
+  function makeThreadGateway(stub: {
+    fetched?: string | null
+    archived?: boolean
+    setArchived?: (v: boolean) => Promise<unknown>
+    fetchThrows?: boolean
+  }) {
+    const calls: Array<{ id: string }> = []
+    const setArchivedCalls: boolean[] = []
+    const gateway = {
+      client: {
+        channels: {
+          fetch: async (id: string) => {
+            calls.push({ id })
+            if (stub.fetchThrows) throw new Error('boom')
+            if (stub.fetched === null) return null
+            return {
+              archived: stub.archived ?? false,
+              setArchived:
+                stub.setArchived ??
+                (async (v: boolean) => {
+                  setArchivedCalls.push(v)
+                  return undefined
+                }),
+            }
+          },
+        },
+      },
+    } as unknown as DiscordGateway
+    return { gateway, calls, setArchivedCalls }
+  }
+
+  it('archives an active trace thread (calls setArchived(true))', async () => {
+    const reg = new WorkspaceRegistry()
+    const { gateway, calls, setArchivedCalls } = makeThreadGateway({ archived: false })
+    const relay = new ToolTraceRelay(gateway, reg)
+    await relay.archiveThread('thr-foo')
+    expect(calls).toEqual([{ id: 'thr-foo' }])
+    expect(setArchivedCalls).toEqual([true])
+  })
+
+  it('no-op when the thread is already archived (idempotent)', async () => {
+    const reg = new WorkspaceRegistry()
+    const { gateway, setArchivedCalls } = makeThreadGateway({ archived: true })
+    const relay = new ToolTraceRelay(gateway, reg)
+    await relay.archiveThread('thr-foo')
+    expect(setArchivedCalls).toEqual([])
+  })
+
+  it('swallow when channels.fetch returns null (thread deleted)', async () => {
+    const reg = new WorkspaceRegistry()
+    const { gateway, setArchivedCalls } = makeThreadGateway({ fetched: null })
+    const relay = new ToolTraceRelay(gateway, reg)
+    await expect(relay.archiveThread('thr-foo')).resolves.toBeUndefined()
+    expect(setArchivedCalls).toEqual([])
+  })
+
+  it('swallow when channels.fetch throws', async () => {
+    const reg = new WorkspaceRegistry()
+    const { gateway } = makeThreadGateway({ fetchThrows: true })
+    const relay = new ToolTraceRelay(gateway, reg)
+    await expect(relay.archiveThread('thr-foo')).resolves.toBeUndefined()
+  })
+
+  it('swallow when setArchived itself throws (Discord permission / closed thread)', async () => {
+    const reg = new WorkspaceRegistry()
+    const { gateway } = makeThreadGateway({
+      setArchived: async () => {
+        throw new Error('archive denied')
+      },
+    })
+    const relay = new ToolTraceRelay(gateway, reg)
+    await expect(relay.archiveThread('thr-foo')).resolves.toBeUndefined()
+  })
+})
+
 describe('formatBody', () => {
   it('joins input and output in two fenced blocks', () => {
     const body = formatBody(makeTrace({ tool_input: '{"x":1}', tool_response: 'ok' }))

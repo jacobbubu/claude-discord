@@ -144,6 +144,9 @@ export async function runDaemon(): Promise<void> {
   // Architecture deltas §36: Stop hook → end §35 turn lifecycle precisely
   // (skip the 30s sunset tail) and clear any /cancel flag now that the turn
   // has actually finished. cwd lookup mirrors cc_permission_request routing.
+  // Architecture deltas §37: also archive the per-turn trace thread so it
+  // drops out of Discord's "Active threads" list immediately (the shortest
+  // autoArchiveDuration is 60min — too slow for rapid multi-turn use).
   const ccStopHandler: CcStopHandler = msg => {
     const wsConn = registry.list().find(c => c.cwd === msg.cwd)
     if (!wsConn) {
@@ -151,7 +154,12 @@ export async function runDaemon(): Promise<void> {
       return
     }
     if (typingHeartbeat) typingHeartbeat.stopByWorkspace(wsConn.workspace ?? '')
+    const threadId = wsConn.activeTraceThreadId
     wsConn.clearTurn()
+    wsConn.activeTraceThreadId = null
+    if (threadId && traceRelay) {
+      void traceRelay.archiveThread(threadId)
+    }
   }
 
   const sockServer = startSocketServer(
