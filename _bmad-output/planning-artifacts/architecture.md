@@ -1930,3 +1930,46 @@ bump 0.0.30 → 0.0.31。
 **测试。** `deriveAllowRule` 纯函数覆盖：Bash 各种 command 输入、文件类工具的 file_path 输入、坏 JSON / 缺字段回退、未知工具回退。`handleButton` "Allow always" 实测写入 `Bash(git:*)` 而不是 `Bash`。
 
 bump 0.0.31 → 0.0.32。
+
+### 35. Turn 生命周期状态机 (Discord ↔ TUI 路由从 15min TTL 收紧到 ~30s)
+
+**背景。** §27 用 `isInboundFresh()` 15min TTL 判断"workspace 在 Discord turn 中"。能挡 80% 场景但残留窗口太宽：用户在 Discord 干完一轮、15min 内切终端给同一 CC 发 prompt，权限/trace 仍错位到 Discord。100% 干净需要 CC 主动告诉我们"我在处理哪条 inbound"（做不到，CC 不暴露）；95% 干净是把 TTL 换成由事件驱动的 turn 生命周期。
+
+**状态机（per Connection）。**
+
+- `idle`：没有 Discord turn 进行中
+- `active`：刚收到 Discord inbound，期待 CC 回复
+- `sunset`：CC 已发了 reply-class 工具调用，30s tail 期内仍当作 Discord turn（cover §25 "intent + tools + final reply" 多次 reply-class 调用 + chunk reply）
+
+**Transitions。**
+
+- inbound 到 → `state='active'`, `activeChatId=channelId`, 取消任何 pending sunset timer
+- reply / edit_message / thread_reply 成功 → 若 `state ∈ {active, sunset}` → `state='sunset'`, 启 30s timer (`TURN_SUNSET_MS`)；已有 sunset timer 则**重置**（多次 reply-class 调用不能让 turn 提前结束）
+- sunset timer 到期 → `state='idle'`, `activeChatId=null`
+- `conn.close()` → 清 timer
+
+**实施单元。**
+
+- `Connection` 加 `turnState: 'idle' | 'active' | 'sunset'` (默认 idle) + 私有 `sunsetTimer`；方法 `startTurn(chatId)` / `startSunset(ms)` / `clearTurn()` / `isInTurn(): boolean`。`close()` 顺手清 sunsetTimer。
+- 常量 `TURN_SUNSET_MS = 30_000`
+- `inbound-router.ts` 把 `conn.lastInboundChatId = msg.channelId; conn.lastInboundTs = Date.now(); conn.activeTraceThreadId = null` 升级成 `conn.startTurn(msg.channelId)`（内部还保留旧字段写入以免破坏 §16 / §24 / §27 现有调用）
+- `tool-handlers.ts` `ToolContext` 加可选 `onReplyDelivered?: () => void`；`toolReply` / `toolEditMessage` / `toolThreadReply` 成功后调
+- `daemon/index.ts` 构造 ctx 时 `onReplyDelivered: () => registry.get(workspace)?.startSunset(TURN_SUNSET_MS)`
+- `permission-relay.ts handleCcRequest` 把 `!wsConn.isInboundFresh()` 改成 `!wsConn.isInTurn()`
+- `tool-trace.ts handle` 同
+
+**向后兼容。** `isInboundFresh()` 保留（依然只看 `lastInboundTs` 字段），调用方迁到 `isInTurn()`。§27 测试中手动设 `lastInboundTs` 模拟 "fresh" 的几处改用 `conn.startTurn(chatId)`。
+
+**Trade-offs。**
+
+- 残留窗口：15min → ~30s。剩下的"CC 还在 sunset tail 期内你切终端再发"理论存在但秒级窗口，实务上几乎察觉不到。
+- 100% 干净仍需 CC 改造（暴露 in-flight inbound 给 hook / tool calls）；不在本节范围。
+- 多 Discord 频道喂同 workspace 的歧义 §26（1:1 强制）已经堵了，不在 §35 关心范围。
+
+**测试。** vitest fake timers：
+- Connection 生命周期：default idle / startTurn → active / startSunset → sunset → timer 后 idle / sunset 内 startSunset 重置 / inbound 到 sunset 重启 active 取消 sunset / close 清 timer
+- tool-handlers reply/edit/thread 成功调 onReplyDelivered（spy）
+- handleCcRequest 路由跟随 `isInTurn()`（active → 路由 Discord、idle → defer）
+- ToolTraceRelay 同
+
+bump 0.0.32 → 0.0.33。

@@ -129,8 +129,10 @@ export class PermissionRelay {
     // DM to a channel they aren't watching; tell the hook to use CC's TUI.
     // (Only applies when we actually matched a workspace conn; an unmatched
     //  cwd keeps the old fan-out behavior.)
-    if (wsConn && !wsConn.isInboundFresh()) {
-      log.info(`cc_permission_request ${msg.request_id}: workspace ${wsConn.workspace} inbound stale — deferring to CC TUI`)
+    // §35 supersedes the TTL check with a turn lifecycle (idle / active /
+    // sunset). Only routes to Discord while CC is in a Discord-driven turn.
+    if (wsConn && !wsConn.isInTurn()) {
+      log.info(`cc_permission_request ${msg.request_id}: workspace ${wsConn.workspace} not in a Discord turn — deferring to CC TUI`)
       try {
         conn.send({ type: 'cc_permission_defer', v: PROTOCOL_VERSION, request_id: msg.request_id })
       } catch (e) {

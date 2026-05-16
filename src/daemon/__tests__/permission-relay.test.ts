@@ -592,8 +592,7 @@ describe('PermissionRelay.handleCcRequest §16 source-bound routing', () => {
     const conn = new Connection(sock as never)
     conn.workspace = 'free-research'
     conn.cwd = '/Users/x/free-research'
-    conn.lastInboundChatId = 'cg-foo'
-    conn.lastInboundTs = Date.now() // §27: fresh, so we route to Discord (not defer)
+    conn.startTurn('cg-foo') // §35: active turn — daemon routes to Discord
     conn.state = 'registered'
     registry.register('free-research', conn)
 
@@ -674,8 +673,7 @@ describe('PermissionRelay.handleCcRequest §16 source-bound routing', () => {
     const conn = new Connection(sock as never)
     conn.workspace = 'free-research'
     conn.cwd = '/Users/x/free-research'
-    conn.lastInboundChatId = 'cg-fresh'
-    conn.lastInboundTs = Date.now()
+    conn.startTurn('cg-fresh') // §35: active turn
     conn.state = 'registered'
     registry.register('free-research', conn)
 

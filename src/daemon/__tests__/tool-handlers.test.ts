@@ -643,6 +643,73 @@ describe('tool-handlers', () => {
     })
   })
 
+  describe('reply (§35: onReplyDelivered)', () => {
+    it('reply calls onReplyDelivered exactly once on success', async () => {
+      const onReplyDelivered = vi.fn()
+      ctx = { ...ctx, onReplyDelivered }
+      mockDmChannel({})
+      const r = await dispatchToolCall(ctx, 'reply', { chat_id: 'dm-u-1', text: 'hi' })
+      expectOk(r)
+      expect(onReplyDelivered).toHaveBeenCalledTimes(1)
+    })
+
+    it('reply does NOT call onReplyDelivered when send throws', async () => {
+      const onReplyDelivered = vi.fn()
+      ctx = { ...ctx, onReplyDelivered }
+      const channel = {
+        id: 'dm-u-1',
+        type: ChannelType.DM,
+        isTextBased: () => true,
+        isThread: () => false,
+        recipientId: 'u-1',
+        send: vi.fn().mockRejectedValue(new Error('boom')),
+      }
+      ;(gateway.client.channels as unknown as { fetch: ReturnType<typeof vi.fn> }).fetch =
+        vi.fn().mockResolvedValue(channel)
+      const r = await dispatchToolCall(ctx, 'reply', { chat_id: 'dm-u-1', text: 'x' })
+      expectFail(r)
+      expect(onReplyDelivered).not.toHaveBeenCalled()
+    })
+
+    it('edit_message calls onReplyDelivered on success but not on failure', async () => {
+      const onReplyDelivered = vi.fn()
+      ctx = { ...ctx, onReplyDelivered }
+      const m = makeMockMessage({ id: 'm-1', authorId: 'u-bot' })
+      mockDmChannel({ messages: [m] })
+      const r = await dispatchToolCall(ctx, 'edit_message', {
+        chat_id: 'dm-u-1',
+        message_id: 'm-1',
+        text: 'new',
+      })
+      expectOk(r)
+      expect(onReplyDelivered).toHaveBeenCalledTimes(1)
+
+      // Same ctx, second call with bogus id → no extra invocation
+      mockDmChannel({}) // no messages → fetch will throw
+      const r2 = await dispatchToolCall(ctx, 'edit_message', {
+        chat_id: 'dm-u-1',
+        message_id: 'ghost',
+        text: 'x',
+      })
+      expectFail(r2)
+      expect(onReplyDelivered).toHaveBeenCalledTimes(1) // unchanged
+    })
+
+    it('react does NOT call onReplyDelivered (not a reply-class tool)', async () => {
+      const onReplyDelivered = vi.fn()
+      ctx = { ...ctx, onReplyDelivered }
+      const m = makeMockMessage({ id: 'm-1', authorId: 'u-bot' })
+      mockDmChannel({ messages: [m] })
+      const r = await dispatchToolCall(ctx, 'react', {
+        chat_id: 'dm-u-1',
+        message_id: 'm-1',
+        emoji: '👀',
+      })
+      expectOk(r)
+      expect(onReplyDelivered).not.toHaveBeenCalled()
+    })
+  })
+
   describe('dispatch unknown tool', () => {
     it('returns "unknown tool" failure', async () => {
       const r = await dispatchToolCall(ctx, 'nonsense', {})
