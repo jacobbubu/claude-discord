@@ -123,6 +123,29 @@ export class ToolTraceRelay {
       log.warn(`cc_tool_trace: post embed to ${threadId} failed: ${e}`)
     }
   }
+
+  /**
+   * Architecture deltas §37: Stop hook calls this on turn end to push the
+   * finished trace thread out of the channel's "Active threads" list (Discord's
+   * shortest autoArchiveDuration is 60min — too slow to keep the top of the
+   * channel uncluttered for fast multi-turn use). Idempotent + tolerant: thread
+   * may have been auto-archived already, deleted by user, or unfetchable.
+   */
+  async archiveThread(threadId: string): Promise<void> {
+    try {
+      const thread = await this.gateway.client.channels.fetch(threadId)
+      if (!thread) return
+      const t = thread as unknown as {
+        archived?: boolean
+        setArchived?: (v: boolean) => Promise<unknown>
+      }
+      if (t.archived === true) return
+      if (typeof t.setArchived !== 'function') return
+      await t.setArchived(true)
+    } catch (e) {
+      log.debug(`cc_tool_trace: archive thread ${threadId} failed: ${e}`)
+    }
+  }
 }
 
 /**
