@@ -2058,3 +2058,34 @@ bump 0.0.33 → 0.0.34。
 - activeTraceThreadId 在归档后被清空
 
 bump 0.0.34 → 0.0.35。
+
+### 38. 出站门读 `groupPolicyDefaults` — 与入站门对称
+
+**背景。** §17 给入站门加 `groupPolicyDefaults` 后，未配置的 guild channel 走默认策略，可让"新建 channel 不用 group add 也能投递入站"。出站门（`fetchTextChannel`）没补，仍强制要求 channel 在 `access.groups` 显式存在。结果是用户在新 channel 发消息能进 CC，CC 调 reply 想回 → daemon 出站门拒（"channel not text-based"），看起来像"bot 死了"。
+
+**改动。** `tool-handlers.fetchTextChannel` 的 guild channel 分支：
+
+- channel 在 `access.groups` → 通过（不变）
+- channel **不在** `access.groups` + `groupPolicy === 'open'` + `groupPolicyDefaults` 已设 → 通过（新）
+- 否则 → deny（含 `disabled` 兜底 / 没设 defaults 的旧默认）
+
+**设计点。**
+
+- 出站没有 sender 概念，不读 `policy.allowFrom`（那是入站的事）
+- 没设 `groupPolicyDefaults` 时行为退化到当前（必须显式 `group add`），向后兼容
+- 设了 → 出/入对称，新 channel 不用单独配置
+
+**为什么保留出/入分离的机制。** 用户问过是否合并 policy。分离的价值：
+- defense in depth：CC 被 prompt injection 时出站门是第二道闸
+- 罕见但真实的不对称用例：广播 channel（只出不入）/ 观察 channel（只入不出）
+- 默认体感对齐 + explicit 覆盖能力保留 = 折中
+
+**测试。**
+
+- guild channel 在 `access.groups` 显式 → 通过（regression）
+- guild channel 不在 `groups` + `groupPolicy: open` + `groupPolicyDefaults` 设 → 通过
+- guild channel 不在 `groups` + 无 `groupPolicyDefaults` → deny（back-compat）
+- guild channel `groupPolicy: disabled` → deny（不管 defaults 是否设）
+- DM 路径不变（recipient 仍走 `access.allowFrom`）
+
+bump 0.0.35 → 0.0.36。

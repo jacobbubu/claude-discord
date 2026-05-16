@@ -173,9 +173,18 @@ async function fetchTextChannel(ctx: ToolContext, channelId: string): Promise<Ch
     }
   } else {
     const key = ch.isThread() ? (ch.parentId ?? ch.id) : ch.id
+    // Architecture deltas §38: outbound mirrors the inbound gate's groupPolicy
+    // semantics — explicit entry in `access.groups` always passes; otherwise
+    // `groupPolicy: 'open'` + `groupPolicyDefaults` set → also passes (parity
+    // with inbound default after §17). Unset defaults / `disabled` → still
+    // deny (back-compat).
     if (!(key in access.groups)) {
-      log.warn(`outbound deny: guild channel ${key} not opted-in via /discord:access group add`)
-      return null
+      if (access.groupPolicy === 'open' && access.groupPolicyDefaults) {
+        // pass via defaults — symmetric with inbound
+      } else {
+        log.warn(`outbound deny: guild channel ${key} not opted-in via /discord:access group add`)
+        return null
+      }
     }
   }
 
