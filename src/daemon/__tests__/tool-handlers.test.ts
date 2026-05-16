@@ -710,6 +710,103 @@ describe('tool-handlers', () => {
     })
   })
 
+  describe('outbound gate (§38: groupPolicyDefaults symmetry)', () => {
+    function mockGuildChannel(chatId: string): {
+      sendCalls: unknown[][]
+      fetched: ReturnType<typeof vi.fn>
+    } {
+      const sendCalls: unknown[][] = []
+      const channel = {
+        id: chatId,
+        type: ChannelType.GuildText,
+        isTextBased: () => true,
+        isThread: () => false,
+        parentId: null,
+        send: vi.fn().mockImplementation((arg: unknown) => {
+          sendCalls.push([arg])
+          return { id: `sent-${sendCalls.length}` }
+        }),
+      }
+      const fetched = vi.fn().mockResolvedValue(channel)
+      ;(gateway.client.channels as unknown as { fetch: typeof fetched }).fetch = fetched
+      return { sendCalls, fetched }
+    }
+
+    it('passes when channel is in access.groups (regression)', async () => {
+      writeAccessFile(paths.accessFile, {
+        dmPolicy: 'pairing',
+        groupPolicy: 'open',
+        allowFrom: ['u-1'],
+        groups: { 'cg-foo': { requireMention: false, allowFrom: [] } },
+        pending: {},
+      })
+      const { sendCalls } = mockGuildChannel('cg-foo')
+      const r = await dispatchToolCall(ctx, 'reply', { chat_id: 'cg-foo', text: 'hi' })
+      expect(r.ok).toBe(true)
+      expect(sendCalls.length).toBe(1)
+    })
+
+    it('passes via groupPolicyDefaults when channel NOT in access.groups', async () => {
+      writeAccessFile(paths.accessFile, {
+        dmPolicy: 'pairing',
+        groupPolicy: 'open',
+        groupPolicyDefaults: { requireMention: false, allowFrom: [] },
+        allowFrom: ['u-1'],
+        groups: {},
+        pending: {},
+      })
+      const { sendCalls } = mockGuildChannel('cg-new')
+      const r = await dispatchToolCall(ctx, 'reply', { chat_id: 'cg-new', text: 'hi' })
+      expect(r.ok).toBe(true)
+      expect(sendCalls.length).toBe(1)
+    })
+
+    it('denies when channel NOT in groups and no groupPolicyDefaults (back-compat)', async () => {
+      writeAccessFile(paths.accessFile, {
+        dmPolicy: 'pairing',
+        groupPolicy: 'open',
+        allowFrom: ['u-1'],
+        groups: {},
+        pending: {},
+      })
+      const { sendCalls } = mockGuildChannel('cg-new')
+      const r = await dispatchToolCall(ctx, 'reply', { chat_id: 'cg-new', text: 'hi' })
+      expect(r.ok).toBe(false)
+      expect(expectFail(r).error).toMatch(/not text-based/)
+      expect(sendCalls.length).toBe(0)
+    })
+
+    it('denies when groupPolicy is "disabled" regardless of defaults', async () => {
+      writeAccessFile(paths.accessFile, {
+        dmPolicy: 'pairing',
+        groupPolicy: 'disabled',
+        groupPolicyDefaults: { requireMention: false, allowFrom: [] },
+        allowFrom: ['u-1'],
+        groups: {},
+        pending: {},
+      })
+      const { sendCalls } = mockGuildChannel('cg-new')
+      const r = await dispatchToolCall(ctx, 'reply', { chat_id: 'cg-new', text: 'hi' })
+      expect(r.ok).toBe(false)
+      expect(sendCalls.length).toBe(0)
+    })
+
+    it('explicit groups entry beats defaults (no behavior change for configured channels)', async () => {
+      writeAccessFile(paths.accessFile, {
+        dmPolicy: 'pairing',
+        groupPolicy: 'open',
+        groupPolicyDefaults: { requireMention: false, allowFrom: [] },
+        allowFrom: ['u-1'],
+        groups: { 'cg-explicit': { requireMention: false, allowFrom: [] } },
+        pending: {},
+      })
+      const { sendCalls } = mockGuildChannel('cg-explicit')
+      const r = await dispatchToolCall(ctx, 'reply', { chat_id: 'cg-explicit', text: 'hi' })
+      expect(r.ok).toBe(true)
+      expect(sendCalls.length).toBe(1)
+    })
+  })
+
   describe('dispatch unknown tool', () => {
     it('returns "unknown tool" failure', async () => {
       const r = await dispatchToolCall(ctx, 'nonsense', {})
