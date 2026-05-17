@@ -1,6 +1,6 @@
 {
   "name": "claude-discord-bot",
-  "version": "0.0.47",
+  "version": "0.1.0",
   "description": "Drive Claude Code from Discord — machine-level agent gateway daemon. One bot routes to N CC workspaces via channel binding (`/use <workspace>`).",
   "type": "module",
   "license": "MIT",

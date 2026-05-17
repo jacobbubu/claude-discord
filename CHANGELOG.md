@@ -1,3 +1,10 @@
+# [0.1.0](https://github.com/jacobbubu/claude-discord/compare/v0.0.47...v0.1.0) (2026-05-17)
+
+
+### Features
+
+* daemon 启动日志加版本号 (§48) ([#128](https://github.com/jacobbubu/claude-discord/issues/128)) ([#129](https://github.com/jacobbubu/claude-discord/issues/129)) ([cfb4373](https://github.com/jacobbubu/claude-discord/commit/cfb43730bdd70ced823a71ddca46f09f4d4a4df4))
+
 # Changelog
 
 All notable changes to this project are documented in this file.
