@@ -2089,3 +2089,40 @@ bump 0.0.34 → 0.0.35。
 - DM 路径不变（recipient 仍走 `access.allowFrom`）
 
 bump 0.0.35 → 0.0.36。
+
+### 39. Edit / MultiEdit / Write trace 出 diff 图（silicon）
+
+**背景。** §24 trace embed 把 tool_input / tool_response 当 JSON 字符串塞进 description。Edit / MultiEdit 的 diff 在纯文本里读着费劲 —— `\n` 字面量、单行 JSON、移动端宽度被语法 noise 吃掉。session 实测分布显示 Edit/MultiEdit/Write 占 31%，是高价值场景。silicon PoC 验证 diff 红绿行图渲染收益显著。
+
+**改动范围（保守）。** 只对 Edit / MultiEdit / Write 出图。Bash（53%）/ Read（14%）/ 其他保持文本（图无收益且失复制能力）。
+
+**实现单元。**
+
+- 新 `src/daemon/diff-image-renderer.ts`：
+  - `renderDiffImage(msg: CcToolTraceMsg): Promise<string | null>` 返回 PNG 临时路径或 null
+  - Edit input `{file_path, old_string, new_string}` → unified diff 字符串
+  - MultiEdit input `{file_path, edits: [...]}` → 多段累积 diff
+  - Write input `{file_path, content}` → "from /dev/null" 全 +new diff
+  - 写 diff 到 `os.tmpdir()` 下唯一文件，spawn `silicon --language diff --theme Dracula --pad-horiz 20 --pad-vert 20 --no-window-controls --font 'JetBrainsMono Nerd Font;PingFang SC' --output <png>`
+  - silicon 缺失（ENOENT）/ spawn 非零退出 → 返回 null，不抛
+- `tool-trace.ts postTraceEmbed`：
+  - 调 renderer；成功 → `thread.send({ embeds, files: [AttachmentBuilder(pngPath)] })` + `embed.image = { url: 'attachment://<basename>' }`
+  - description 不变（保留纯文本 diff 用于搜索 / 复制 fallback）
+  - 发完后 `void unlink(pngPath)` fire-and-forget
+- README 加 silicon 可选依赖段落
+
+**降级。** silicon 不装 / 渲染失败 → trace 仍发文本版，绝不阻塞投递。
+
+**测试。**
+
+- `renderDiffImage` 单元（spawn 走 mock）：
+  - Edit / MultiEdit / Write 各自 input 形状 → 正确 diff 字符串传给 silicon
+  - 非 Edit/MultiEdit/Write tool → 直接返回 null（不 spawn）
+  - silicon ENOENT → 返回 null
+  - silicon 非零退出 → 返回 null
+- `tool-trace.ts` 集成：
+  - Edit trace → `thread.send` 调用带 `files`，embed.image set
+  - Bash trace → 不带 files
+  - renderer null → embed 仍发，无 files
+
+bump 0.0.36 → 0.0.37。

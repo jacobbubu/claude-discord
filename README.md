@@ -58,6 +58,7 @@ Architecture details: see
 - [Bun](https://bun.sh) 1.x (runtime — same as the upstream Discord plugin)
 - macOS or Linux (Windows post-MVP)
 - A Discord bot application + token (see [LIVE_TEST.md](./LIVE_TEST.md) §1)
+- **Optional** — [silicon](https://github.com/Aloxaf/silicon) (`brew install silicon`) for §39 Edit/MultiEdit/Write diff PNG rendering in trace threads. Not installed → trace falls back to text-only.
 
 ## Quick start
 

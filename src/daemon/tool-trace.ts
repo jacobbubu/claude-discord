@@ -12,20 +12,30 @@
  *   - DM channels don't support threads → drop the trace silently
  */
 
-import { ChannelType, EmbedBuilder } from 'discord.js'
+import { AttachmentBuilder, ChannelType, EmbedBuilder } from 'discord.js'
+import { unlink } from 'node:fs/promises'
+import { basename } from 'node:path'
 import type { CcToolTraceMsg } from '../protocol/schema.ts'
 import { log } from '../shared/logger.ts'
 import type { Connection } from './connection.ts'
+import { renderDiffImage as defaultRenderDiffImage } from './diff-image-renderer.ts'
 import type { DiscordGateway } from './discord-gateway.ts'
 import type { WorkspaceRegistry } from './registry.ts'
 
 const EMBED_DESC_MAX = 4000 // Discord embed.description hard limit is 4096
 const THREAD_AUTO_ARCHIVE_MIN = 60
 
+/**
+ * §39: pluggable renderer so unit tests can stub silicon out. Default delegates
+ * to the real `renderDiffImage` (which spawns silicon).
+ */
+export type DiffImageRenderer = (msg: CcToolTraceMsg) => Promise<string | null>
+
 export class ToolTraceRelay {
   constructor(
     private readonly gateway: DiscordGateway,
     private readonly registry: WorkspaceRegistry,
+    private readonly renderDiff: DiffImageRenderer = defaultRenderDiffImage,
   ) {}
 
   async handle(msg: CcToolTraceMsg): Promise<void> {
@@ -116,9 +126,28 @@ export class ToolTraceRelay {
         .setDescription(formatBody(msg))
         .setColor(msg.status === 'error' ? 0xed4245 : 0x5865f2)
         .setFooter({ text: new Date().toISOString() })
-      await (thread as unknown as { send: (o: { embeds: unknown[] }) => Promise<unknown> }).send({
-        embeds: [embed],
-      })
+
+      // §39: try diff image render for Edit/MultiEdit/Write. Always keep text
+      // description for searchability + copy-paste fallback. Renderer returns
+      // null when tool isn't diff-shaped or silicon spawn fails — degrades to
+      // text-only.
+      const imagePath = await this.renderDiff(msg).catch(() => null)
+      const sendPayload: { embeds: unknown[]; files?: unknown[] } = { embeds: [embed] }
+      if (imagePath) {
+        const name = basename(imagePath)
+        embed.setImage(`attachment://${name}`)
+        sendPayload.files = [new AttachmentBuilder(imagePath, { name })]
+      }
+
+      await (thread as unknown as { send: (o: { embeds: unknown[]; files?: unknown[] }) => Promise<unknown> }).send(
+        sendPayload,
+      )
+
+      if (imagePath) {
+        void unlink(imagePath).catch(() => {
+          /* tmp cleanup best-effort */
+        })
+      }
     } catch (e) {
       log.warn(`cc_tool_trace: post embed to ${threadId} failed: ${e}`)
     }
