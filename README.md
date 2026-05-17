@@ -21,12 +21,13 @@ bot, route by channel binding, and survive process restarts.
 
 ### What a working setup looks like
 
-<!-- TODO: drop a real screenshot here. Suggested capture: a Discord channel
-     where the user DM'd the bot "summarize this PR", and the reply card +
-     trace thread (with Bash/Read/Edit embeds) are both visible. -->
+![claude-discord hero — Discord channel on the left (user prompt + bot reply),
+trace thread on the right with 📖 Read and 💻 Bash embeds](docs/screenshots/hero.png)
 
-> _Screenshot pending — capture: Discord channel showing a user prompt, the
-> bot reply, and the auto-opened trace thread with tool I/O embeds._
+A single prompt (`Read the first 10 lines of README.md, then grep how many .ts
+files there are, and tell me the latest commit hash.`) — the main channel
+stays focused on the conversation while every tool call lands as its own
+embed in the auto-opened trace thread.
 
 ## Quick start (≈ 10 min)
 
