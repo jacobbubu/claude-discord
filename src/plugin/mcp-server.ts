@@ -15,13 +15,73 @@ import {
 import { PROTOCOL_VERSION } from '../protocol/version.ts'
 import type { InboundMsg, ToolResultMsg } from '../protocol/schema.ts'
 
+/**
+ * §32 + §42 shared embed input schema. Used by both the legacy single
+ * `embed` arg and the new `embeds[]` array. Discord per-embed caps: title ≤
+ * 256, description ≤ 4096, ≤ 25 fields (name ≤ 256, value ≤ 1024),
+ * author.name ≤ 256, footer.text ≤ 2048. The 6000-char total cap applies
+ * across all embeds in a single message — daemon-side validateEmbed enforces.
+ */
+const EMBED_INPUT_SCHEMA = {
+  type: 'object',
+  description: 'Discord embed object.',
+  properties: {
+    title: { type: 'string' },
+    description: { type: 'string' },
+    color: { type: 'integer', description: 'RGB int (0..0xFFFFFF)' },
+    url: { type: 'string', description: 'Clickable URL on the title' },
+    timestamp: { type: 'string', description: 'ISO 8601; renders as relative time on hover' },
+    fields: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          value: { type: 'string' },
+          inline: { type: 'boolean' },
+        },
+        required: ['name', 'value'],
+      },
+    },
+    author: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        icon_url: { type: 'string' },
+        url: { type: 'string' },
+      },
+      required: ['name'],
+    },
+    footer: {
+      type: 'object',
+      properties: {
+        text: { type: 'string' },
+        icon_url: { type: 'string' },
+      },
+      required: ['text'],
+    },
+    image: {
+      type: 'object',
+      description: 'Large bottom image. URL may be `attachment://<name>` referencing a file uploaded in same message.',
+      properties: { url: { type: 'string' } },
+      required: ['url'],
+    },
+    thumbnail: {
+      type: 'object',
+      description: 'Small top-right image. URL may be `attachment://<name>`.',
+      properties: { url: { type: 'string' } },
+      required: ['url'],
+    },
+  },
+} as const
+
 const TOOL_DEFS = [
   {
     name: 'reply',
     description:
       'Send a reply on Discord. Pass chat_id from the inbound message. ' +
-      'For long structured summaries (task reports, PR review takeaways, etc.) pass an `embed` ' +
-      'with title / description / fields; keep `text` short as a teaser line.',
+      'For structured summaries pass `embed` (single) or `embeds` (up to 10) ' +
+      'with title / description / fields / author / image / etc.; keep `text` short as a teaser line.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -29,29 +89,14 @@ const TOOL_DEFS = [
         text: { type: 'string' },
         reply_to: { type: 'string' },
         files: { type: 'array', items: { type: 'string' } },
-        embed: {
-          type: 'object',
+        embed: EMBED_INPUT_SCHEMA,
+        embeds: {
+          type: 'array',
           description:
-            'Optional Discord embed. Use for structured summaries. Discord caps: title ≤ 256, ' +
-            'description ≤ 4096, up to 25 fields (name ≤ 256, value ≤ 1024), and ' +
-            'title + description + all field name/value sums ≤ 6000.',
-          properties: {
-            title: { type: 'string' },
-            description: { type: 'string' },
-            color: { type: 'integer', description: 'RGB int (0..0xFFFFFF)' },
-            fields: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  name: { type: 'string' },
-                  value: { type: 'string' },
-                  inline: { type: 'boolean' },
-                },
-                required: ['name', 'value'],
-              },
-            },
-          },
+            'Up to 10 embeds in one message. Discord caps the **combined** ' +
+            'character total across all embeds at 6000. Use this for ' +
+            'meta + input + output trace-style layouts. Mutually exclusive with `embed`.',
+          items: EMBED_INPUT_SCHEMA,
         },
       },
       required: ['chat_id', 'text'],

@@ -2197,3 +2197,29 @@ bump 0.0.37 → 0.0.38。
 - inbound-router integration：trace thread + isTraceThread = true → 路由到 parent；非 trace thread → 走 msg.channelId；plugin 收到 inbound 的 chat_id / conn.lastInboundChatId 都是 effectiveChannelId
 
 bump 0.0.41 → 0.0.42。
+
+### 42. reply 工具支持 embeds[] 多 embed + 扩 embed schema
+
+**背景。** Discord 单条消息允许 10 个 embed，但 plugin reply 只接受 \`embed: {...}\`（单个）。CC 想发 meta + input + output 三段紧凑 trace、想 \`embed.image\` 引用 \`attachment://\`、想用 \`author\` / \`footer\` / \`url\` / \`timestamp\` 等字段都做不到。§39 给 trace 加 silicon PNG 是 daemon 内部加的，plugin 端没法主动配图。
+
+**改动。**
+
+- \`ReplyEmbedInput\` 类型扩展 \`url\` / \`timestamp\` / \`author\` / \`image\` / \`thumbnail\` / \`footer\`
+- \`validateEmbed\` 校验新字段类型 + 把 \`author.name\` / \`footer.text\` 计入 6000 总 cap，应用到 EmbedBuilder
+- \`toolReply\` 接受 \`embeds?: ReplyEmbedInput[]\`（新）+ \`embed?: ReplyEmbedInput\`（兼容）；二者互斥；逐个 validate；总数 ≤ 10；总字符 ≤ 6000；调 \`channel.send({ embeds })\`
+- \`plugin/mcp-server.ts\` reply tool 的 inputSchema 抽出 \`EMBED_INPUT_SCHEMA\`，\`embed\` 用单个，\`embeds\` 用 array of EMBED_INPUT_SCHEMA
+- 新 caps：\`MAX_EMBEDS_PER_MESSAGE = 10\`、\`EMBED_AUTHOR_NAME_MAX = 256\`、\`EMBED_FOOTER_TEXT_MAX = 2048\`
+
+**取舍。**
+
+- 不删 \`embed\` 单字段（向后兼容）；CC 现有调用方仍走单 embed 路径
+- \`image.url\` / \`thumbnail.url\` 接受 \`attachment://<filename>\` 字符串，配合现有 \`files\` 参数可在同条消息附图
+- timestamp 用 ISO 8601 字符串；Discord 客户端会渲染相对时间
+
+**测试（共 +14）。**
+
+- validateEmbed 各新字段合法 / 非法（author.name 空 / 超长 / footer.text 超长 / image.url 非字符串 / timestamp 非 ISO）
+- author.name + footer.text 计入 total
+- toolReply：embeds 数组 → channel.send 多 embed；embed + embeds 同传 → reject；>10 → reject；总字符 > 6000 → reject；旧 \`embed\` 仍工作；\`attachment://\` 在 image.url 保留
+
+bump 0.0.42 → 0.0.43。
