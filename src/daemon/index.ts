@@ -12,6 +12,7 @@ import { chmodSync, existsSync, mkdirSync } from 'node:fs'
 import { ChannelType } from 'discord.js'
 import { initStateDir } from '../shared/init-state-dir.ts'
 import { attachFileSink, log } from '../shared/logger.ts'
+import { readPackageVersion } from '../shared/package-version.ts'
 import { resolvePaths } from '../shared/paths.ts'
 import { startApprovalWatcher } from './approval-watcher.ts'
 import { startDiscordGateway } from './discord-gateway.ts'
@@ -271,7 +272,7 @@ export async function runDaemon(): Promise<void> {
     }
   })
 
-  log.info(`daemon started — state dir: ${paths.stateDir}`)
+  log.info(`daemon started — claude-discord-bot v${readPackageVersion()}, state dir: ${paths.stateDir}`)
   log.info(`pid=${process.pid} uid=${process.getuid?.()}`)
 
   let resolveExit: () => void
