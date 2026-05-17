@@ -167,11 +167,14 @@ Architecture deep dive:
 
 ### Optional: install the PreToolUse / PostToolUse / Stop hooks
 
-These power three quality-of-life features:
+The base setup above is enough to send / receive Discord messages. The
+hooks add three quality-of-life features for unattended / mobile usage:
 
-- **Per-tool permission prompts routed to Discord** (instead of blocking CC's TUI)
-- **Tool call traces** auto-collected into per-turn Discord threads
-- **`/cancel`** taking effect at the next tool call
+| Hook | Adds | Skip it →lose |
+| --- | --- | --- |
+| **PreToolUse** | Per-tool permission prompts routed to Discord buttons | CC's TUI prompts each tool — no good for unattended |
+| **PostToolUse** | Tool I/O auto-collected into per-turn Discord trace threads | No trace visibility in Discord |
+| **Stop** | Precise turn-end signal — `/cancel` cleanup + §37 thread archive | `/cancel` still works but archive falls back to Discord's 60min auto-archive |
 
 ```bash
 claude-discord-bot install-hook       # writes ~/.claude/settings.json entries
