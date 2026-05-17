@@ -198,4 +198,90 @@ describe('inbound-router integration', () => {
     const inbound = JSON.parse(sock.writes[0]!.trim())
     expect(inbound.content).toBe('hello')
   })
+
+  it('§41: inbound from daemon-created trace thread → redirected to parent channel', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'inb-'))
+    const env = buildEnv(stateDir, {
+      allowFrom: ['u1'],
+      groups: { cg1: { requireMention: false, allowFrom: [] } },
+    })
+    // Parent channel is bound; thread is NOT — without §41 this would say
+    // "no workspace bound" and reply with that hint.
+    const sock = new FakeSocket()
+    const conn = new Connection(sock as never)
+    conn.workspace = 'foo'
+    conn.state = 'registered'
+    env.registry.register('foo', conn)
+    env.routing.set('cg1', 'foo', Date.now())
+
+    // Stub: this thread id is one of our trace threads.
+    const handler = makeInboundHandler({
+      ...env,
+      isTraceThread: (tid: string) => tid === 'thr-trace-1',
+    })
+
+    handler(
+      makeFakeMessage({
+        channelId: 'thr-trace-1',
+        authorId: 'u1',
+        content: 'follow-up while inside trace thread',
+        isDM: false,
+        isThread: true,
+        parentId: 'cg1',
+      }) as never,
+    )
+    await flush()
+    await flush()
+
+    // Plugin received an inbound with chat_id=parent (cg1), not the thread.
+    expect(sock.writes.length).toBe(1)
+    const inbound = JSON.parse(sock.writes[0]!.trim())
+    expect(inbound.content).toBe('follow-up while inside trace thread')
+    expect(inbound.chat_id).toBe('cg1')
+    // Conn's turn state anchors on parent, so subsequent reply lands there.
+    expect(conn.lastInboundChatId).toBe('cg1')
+  })
+
+  it('§41: inbound from a non-trace thread → not redirected (uses msg.channelId)', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'inb-'))
+    const env = buildEnv(stateDir, {
+      allowFrom: ['u1'],
+      // Both parent and thread are explicitly bound — typical user-created
+      // discussion thread that happens to bind to a workspace via /use.
+      groups: {
+        cg1: { requireMention: false, allowFrom: [] },
+        'thr-other-1': { requireMention: false, allowFrom: [] },
+      },
+    })
+    const sock = new FakeSocket()
+    const conn = new Connection(sock as never)
+    conn.workspace = 'foo'
+    conn.state = 'registered'
+    env.registry.register('foo', conn)
+    env.routing.set('thr-other-1', 'foo', Date.now())
+
+    // §41 predicate says this thread is NOT ours → no redirect.
+    const handler = makeInboundHandler({
+      ...env,
+      isTraceThread: () => false,
+    })
+
+    handler(
+      makeFakeMessage({
+        channelId: 'thr-other-1',
+        authorId: 'u1',
+        content: 'in a regular thread',
+        isDM: false,
+        isThread: true,
+        parentId: 'cg1',
+      }) as never,
+    )
+    await flush()
+    await flush()
+
+    expect(sock.writes.length).toBe(1)
+    const inbound = JSON.parse(sock.writes[0]!.trim())
+    expect(inbound.chat_id).toBe('thr-other-1')
+    expect(conn.lastInboundChatId).toBe('thr-other-1')
+  })
 })

@@ -47,6 +47,15 @@ export type InboundRouterDeps = {
    * behavior — Discord auto-decays the dot after ~10s).
    */
   typingHeartbeat?: TypingHeartbeat
+  /**
+   * §41: predicate identifying daemon-created trace threads. When the inbound
+   * comes from such a thread (user typed inside the old trace thread instead
+   * of in the bound channel), the router redirects all downstream channel
+   * operations (routing lookup, CC reply chat_id, typing, etc.) to the
+   * thread's parent channel — so new traces don't get jammed into the old
+   * thread (Discord forbids thread-in-thread).
+   */
+  isTraceThread?: (threadId: string) => boolean
 }
 
 export function makeInboundHandler(deps: InboundRouterDeps): (msg: Message) => void {
@@ -75,12 +84,31 @@ async function handle(deps: InboundRouterDeps, msg: Message): Promise<void> {
     ? msg.channel.parentId ?? msg.channelId
     : msg.channelId
 
+  // §41: if the inbound came from a thread we created as a trace thread,
+  // redirect all downstream operations to the parent channel. The user's
+  // message stays in the thread (we don't move it), but routing/turn/CC
+  // reply all behave as if the message had landed in the parent channel —
+  // so the new turn gets a fresh trace thread under the parent instead of
+  // failing to nest under the existing thread.
+  const isOurTraceThread =
+    msg.channel.isThread() &&
+    !!msg.channel.parentId &&
+    !!deps.isTraceThread?.(msg.channelId)
+  const effectiveChannelId = isOurTraceThread
+    ? (msg.channel.parentId as string)
+    : msg.channelId
+  if (isOurTraceThread) {
+    log.info(
+      `§41: inbound from trace thread ${msg.channelId} → redirecting to parent ${effectiveChannelId}`,
+    )
+  }
+
   const isMentioned = computeIsMentioned(msg, access, deps.gateway)
 
   const input: GateInput = {
     isDM,
     senderId: msg.author.id,
-    channelId: msg.channelId,
+    channelId: effectiveChannelId,
     dmChannelId: msg.channelId,
     guildChannelKey,
     isMentioned,
@@ -95,14 +123,16 @@ async function handle(deps: InboundRouterDeps, msg: Message): Promise<void> {
     writeAccessFile(deps.accessFile, access)
     const lead = decision.isResend ? 'Still pending' : 'Pairing required'
     await deps.gateway.send(
-      msg.channelId,
+      effectiveChannelId,
       `${lead} — run in your terminal:\n\nclaude-discord-bot pair ${decision.code}`,
     )
     return
   }
 
-  // deliver — find target workspace
-  const route = deps.routing.get(msg.channelId)
+  // deliver — find target workspace. §41: effectiveChannelId may be the
+  // parent of a trace thread the user typed in, so routing/turn/CC reply
+  // are anchored on the actual workspace channel, not the thread.
+  const route = deps.routing.get(effectiveChannelId)
   const workspace = route?.workspace ?? null
 
   if (!workspace) {
@@ -113,13 +143,13 @@ async function handle(deps: InboundRouterDeps, msg: Message): Promise<void> {
     const live = deps.registry.list()
     if (live.length === 0) {
       await deps.gateway.send(
-        msg.channelId,
+        effectiveChannelId,
         'no workspace online — start one with `claude --channels plugin:claude-discord@<marketplace>` from a project directory',
       )
     } else {
       const names = live.map(c => c.workspace).filter(Boolean).slice(0, 5).join(', ')
       await deps.gateway.send(
-        msg.channelId,
+        effectiveChannelId,
         `this channel has no workspace bound. run \`/use <workspace>\` to bind. active workspaces: ${names}${live.length > 5 ? ', ...' : ''}`,
       )
     }
@@ -129,7 +159,7 @@ async function handle(deps: InboundRouterDeps, msg: Message): Promise<void> {
   const conn = deps.registry.get(workspace)
   if (!conn) {
     await deps.gateway.send(
-      msg.channelId,
+      effectiveChannelId,
       `${workspace} is currently offline — please start CC for that workspace`,
     )
     return
@@ -138,7 +168,7 @@ async function handle(deps: InboundRouterDeps, msg: Message): Promise<void> {
   // Architecture deltas §35: enter the 'active' turn state. This also takes
   // care of the §16 lastInboundChatId + §27 lastInboundTs fields kept for
   // back-compat with isInboundFresh() callers.
-  conn.startTurn(msg.channelId)
+  conn.startTurn(effectiveChannelId)
   // Architecture deltas §24: store a short content preview for trace-thread
   // naming, and reset the per-turn active trace thread so the next
   // PostToolUse fire starts a fresh thread under this turn's reply.
@@ -150,7 +180,7 @@ async function handle(deps: InboundRouterDeps, msg: Message): Promise<void> {
   // every ~8s) so long tasks don't look hung — stopped by reply/edit/thread
   // tool handlers. Without one, fall back to a single sendTyping (~10s decay).
   if (deps.typingHeartbeat) {
-    deps.typingHeartbeat.start(msg.channelId, conn.workspace ?? undefined)
+    deps.typingHeartbeat.start(effectiveChannelId, conn.workspace ?? undefined)
   } else if ('sendTyping' in msg.channel) {
     void (msg.channel as { sendTyping: () => Promise<void> })
       .sendTyping()
@@ -159,6 +189,8 @@ async function handle(deps: InboundRouterDeps, msg: Message): Promise<void> {
 
   // UX: optional ack reaction (e.g. 👀 / 🔨). Set via
   // `claude-discord-bot set ackReaction <emoji>`; empty string disables.
+  // Reaction stays on the original message wherever the user typed it
+  // (including the trace thread when §41 redirect kicked in).
   if (access.ackReaction) {
     void msg.react(access.ackReaction).catch(() => {})
   }
@@ -166,7 +198,7 @@ async function handle(deps: InboundRouterDeps, msg: Message): Promise<void> {
   conn.send({
     type: 'inbound',
     v: PROTOCOL_VERSION,
-    chat_id: msg.channelId,
+    chat_id: effectiveChannelId,
     message_id: msg.id,
     user: msg.author.username,
     user_id: msg.author.id,
@@ -185,7 +217,7 @@ async function handle(deps: InboundRouterDeps, msg: Message): Promise<void> {
 
   // Track inbound message in workspace's ring buffer for /recent.
   deps.ringBuffers.for(workspace).push({
-    channelId: msg.channelId,
+    channelId: effectiveChannelId,
     direction: 'in',
     text: msg.content || '(attachment)',
     ts: msg.createdAt.getTime(),

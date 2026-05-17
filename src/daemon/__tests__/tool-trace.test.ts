@@ -234,6 +234,39 @@ describe('ToolTraceRelay.handle', () => {
   })
 })
 
+describe('ToolTraceRelay trace-thread registration (deltas §41)', () => {
+  it('isOurTraceThread is false for never-created ids', () => {
+    const reg = new WorkspaceRegistry()
+    const g = makeGateway()
+    const relay = new ToolTraceRelay(g.gateway, reg)
+    expect(relay.isOurTraceThread('thr-anything')).toBe(false)
+  })
+
+  it('registers the thread id after a successful create; isOurTraceThread → true', async () => {
+    const reg = new WorkspaceRegistry()
+    const conn = makeConn('/work', 'parent-1', 'task')
+    reg.register('work', conn)
+    const g = makeGateway()
+    g.addParent('parent-1', ChannelType.GuildText)
+
+    const relay = new ToolTraceRelay(g.gateway, reg)
+    await relay.handle(makeTrace({ cwd: '/work' }))
+
+    const threadId = g.created[0]!.parentId + '' // not actually parentId, but we know the created thread's id from sent[].threadId
+    expect(g.sent.length).toBe(1)
+    const realThreadId = g.sent[0]!.threadId
+    expect(relay.isOurTraceThread(realThreadId)).toBe(true)
+    expect(realThreadId).not.toBe(threadId) // sanity: thread id ≠ parent id
+  })
+
+  it('does NOT register for threads we didn\'t create (sanity: unrelated id stays false)', () => {
+    const reg = new WorkspaceRegistry()
+    const g = makeGateway()
+    const relay = new ToolTraceRelay(g.gateway, reg)
+    expect(relay.isOurTraceThread('thr-not-ours')).toBe(false)
+  })
+})
+
 describe('ToolTraceRelay.archiveThread (deltas §37)', () => {
   function makeThreadGateway(stub: {
     fetched?: string | null
