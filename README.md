@@ -54,6 +54,10 @@ You should now have the `claude-discord-bot` command available.
    - Give it a username
    - **Privileged Gateway Intents** → enable **Message Content Intent**
      (required, otherwise message bodies arrive empty)
+
+     ![Discord Developer Portal — Bot tab showing Message Content Intent
+     toggle enabled](docs/screenshots/discord-message-content-intent.png)
+
    - **Token** → **Reset Token** → copy it (only shown once)
 3. Sidebar → **OAuth2 → URL Generator**:
    - Scopes: ✅ `bot` ✅ `applications.commands`
