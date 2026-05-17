@@ -23,7 +23,7 @@ function trace(overrides: Partial<CcToolTraceMsg> = {}): CcToolTraceMsg {
 
 describe('renderTraceContent (deltas §40)', () => {
   describe('Bash', () => {
-    it('splits command / stdout / stderr; adds Status + Exit + Intent fields', () => {
+    it('splits command / stdout / stderr; adds Status + Intent fields', () => {
       const r = renderTraceContent(
         trace({
           tool_name: 'Bash',
@@ -34,7 +34,7 @@ describe('renderTraceContent (deltas §40)', () => {
           tool_response: JSON.stringify({
             stdout: ' M src/foo.ts',
             stderr: '',
-            exitCode: 0,
+            interrupted: false,
           }),
           status: 'ok',
         }),
@@ -44,11 +44,13 @@ describe('renderTraceContent (deltas §40)', () => {
       expect(r.description).toContain('**stdout**')
       expect(r.description).toContain('```text\n M src/foo.ts\n```')
       expect(r.description).not.toContain('**stderr**') // omitted when empty
+      // §40-fix #110: Exit field dropped — CC's Bash hook payload has no
+      // exitCode, so the field would always be missing in practice. Status
+      // already conveys ok/error via detectStatus(is_error).
       const names = (r.fields ?? []).map(f => f.name)
-      expect(names).toEqual(['Status', 'Exit', 'Intent'])
+      expect(names).toEqual(['Status', 'Intent'])
       expect(r.fields![0]!.value).toBe('✅ ok')
-      expect(r.fields![1]!.value).toBe('`0`')
-      expect(r.fields![2]!.value).toBe('check working tree')
+      expect(r.fields![1]!.value).toBe('check working tree')
     })
 
     it('error status → ❌ Status', () => {
@@ -56,7 +58,7 @@ describe('renderTraceContent (deltas §40)', () => {
         trace({
           tool_name: 'Bash',
           tool_input: JSON.stringify({ command: 'false' }),
-          tool_response: JSON.stringify({ stdout: '', stderr: 'oops', exitCode: 1 }),
+          tool_response: JSON.stringify({ stdout: '', stderr: 'oops' }),
           status: 'error',
         }),
       )
@@ -64,6 +66,25 @@ describe('renderTraceContent (deltas §40)', () => {
       expect(status.value).toBe('❌ error')
       expect(r.description).toContain('**stderr**')
       expect(r.description).toContain('```text\noops\n```')
+    })
+
+    it('§40-fix: shows Interrupted field when response.interrupted is true', () => {
+      const r = renderTraceContent(
+        trace({
+          tool_name: 'Bash',
+          tool_input: JSON.stringify({ command: 'sleep 100' }),
+          tool_response: JSON.stringify({
+            stdout: '',
+            stderr: '',
+            interrupted: true,
+          }),
+          status: 'error',
+        }),
+      )
+      const names = (r.fields ?? []).map(f => f.name)
+      expect(names).toContain('Interrupted')
+      const f = r.fields!.find(x => x.name === 'Interrupted')!
+      expect(f.value).toBe('⏸ yes')
     })
 
     it('falls back to raw response when output is not JSON-shaped', () => {
