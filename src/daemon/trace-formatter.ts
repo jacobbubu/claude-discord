@@ -81,7 +81,32 @@ function renderRead(input: unknown, response: string): TraceContent {
     const end = limit != null ? start + limit - 1 : '?'
     fields.push({ name: 'Range', value: `${start}–${end}`, inline: true })
   }
-  return { description: clampDescription(fence('text', response)), fields }
+  return { description: clampDescription(fence('text', extractReadContent(response))), fields }
+}
+
+/**
+ * CC's Read tool wraps the file body in a structured response shape, e.g.
+ * `{ type: 'text', file: { filePath, content } }` (and historically also
+ * `{ type, file: [{...}] }`). Without unwrapping, the trace embed shows the
+ * raw JSON dump — escape sequences, metadata, and all. Pull out `content`
+ * when present, fall back to the raw string for simple/unknown shapes.
+ */
+export function extractReadContent(response: string): string {
+  const parsed = safeParseJson(response)
+  if (parsed && typeof parsed === 'object') {
+    const file = (parsed as Record<string, unknown>).file
+    if (Array.isArray(file) && file.length > 0) {
+      const inner = file[0]
+      if (inner && typeof inner === 'object') {
+        const c = (inner as Record<string, unknown>).content
+        if (typeof c === 'string') return c
+      }
+    } else if (file && typeof file === 'object') {
+      const c = (file as Record<string, unknown>).content
+      if (typeof c === 'string') return c
+    }
+  }
+  return response
 }
 
 function renderGrep(input: unknown, response: string): TraceContent {

@@ -96,6 +96,48 @@ describe('renderTraceContent (deltas §40)', () => {
       const range = r.fields!.find(f => f.name === 'Range')!
       expect(range.value).toBe('10–14')
     })
+
+    it('§40-fix: unwraps CC structured response { type, file: { content } }', () => {
+      const r = renderTraceContent(
+        trace({
+          tool_name: 'Read',
+          tool_input: JSON.stringify({ file_path: '/src/x.ts' }),
+          tool_response: JSON.stringify({
+            type: 'text',
+            file: { filePath: '/src/x.ts', content: 'line one\nline two\n' },
+          }),
+        }),
+      )
+      expect(r.description).toContain('```text\nline one\nline two')
+      // Should NOT leak the wrapper fields:
+      expect(r.description).not.toContain('"filePath"')
+      expect(r.description).not.toContain('"type":"text"')
+    })
+
+    it('§40-fix: unwraps CC structured response { type, file: [{ content }] } (array shape)', () => {
+      const r = renderTraceContent(
+        trace({
+          tool_name: 'Read',
+          tool_input: JSON.stringify({ file_path: '/src/y.ts' }),
+          tool_response: JSON.stringify({
+            type: 'text',
+            file: [{ filePath: '/src/y.ts', content: 'array shape content\n' }],
+          }),
+        }),
+      )
+      expect(r.description).toContain('```text\narray shape content')
+    })
+
+    it('§40-fix: falls back to raw string when shape is unknown', () => {
+      const r = renderTraceContent(
+        trace({
+          tool_name: 'Read',
+          tool_input: JSON.stringify({ file_path: '/src/z.ts' }),
+          tool_response: 'plain string content',
+        }),
+      )
+      expect(r.description).toContain('```text\nplain string content')
+    })
   })
 
   describe('Grep', () => {
