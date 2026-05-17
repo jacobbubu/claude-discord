@@ -15,7 +15,7 @@ import { z } from 'zod'
 import { resolvePaths } from '../shared/paths.ts'
 import { PROTOCOL_VERSION } from '../protocol/version.ts'
 import type { WireMsg } from '../protocol/schema.ts'
-import { shouldConnectDaemon } from './connect-policy.ts'
+import { detectParentAgent, shouldConnectDaemon } from './connect-policy.ts'
 import { startOrphanWatcher } from './orphan-watcher.ts'
 import { backoffDelayMs, delay } from './reconnect.ts'
 import { buildWhoamiResult } from './whoami.ts'
@@ -46,7 +46,10 @@ const HEARTBEAT_MS = 10_000
 const PARENT_PID = process.ppid
 
 const SOCKET_PATH = process.env.CLAUDE_DISCORD_SOCKET ?? resolvePaths().socketPath
-const PLUGIN_AGENT = 'claude-code'
+// §50: detect which agent spawned us (CC vs Codex) at startup. Daemon's
+// `register` requires this string; defaulting to claude-code keeps the
+// historical behavior intact when detection is inconclusive.
+const PLUGIN_AGENT = detectParentAgent()
 const PLUGIN_CAPABILITIES = ['reply', 'react', 'edit_message', 'fetch_messages', 'download_attachment']
 
 /**

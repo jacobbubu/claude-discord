@@ -74,6 +74,22 @@ export function decideConnect(input: DecideInput): ConnectDecision {
  * "claude", or null if no claude ancestor found within the walk limit.
  */
 export function findClaudeAncestorCmdline(startPid = process.ppid, maxDepth = 8): string | null {
+  const hit = findAgentAncestor('claude-code', startPid, maxDepth)
+  return hit?.cmdline ?? null
+}
+
+/**
+ * §50: generalized ancestor walker that also recognizes Codex. Returns the
+ * first ancestor process whose basename matches the target agent (or any
+ * agent when `target` is undefined). Used by plugin index.ts to decide
+ * whether to register as `claude-code` or `codex`, and by hook scripts
+ * to detect their parent.
+ */
+export function findAgentAncestor(
+  target?: 'claude-code' | 'codex',
+  startPid = process.ppid,
+  maxDepth = 8,
+): { agent: 'claude-code' | 'codex'; cmdline: string } | null {
   let pid = startPid
   for (let depth = 0; depth < maxDepth; depth++) {
     if (pid <= 1) return null
@@ -86,19 +102,35 @@ export function findClaudeAncestorCmdline(startPid = process.ppid, maxDepth = 8)
     } catch {
       return null
     }
-    // Format: "<ppid> <command...>"
     const m = line.match(/^\s*(\d+)\s+(.+)$/)
     if (!m) return null
     const parentPid = Number(m[1])
     const cmd = m[2]!
-    // Match if the command's basename is "claude" or starts with "claude "
     const basename = (cmd.split(' ')[0] ?? '').split('/').pop() ?? ''
+    const lower = basename.toLowerCase()
+    let agent: 'claude-code' | 'codex' | null = null
     if (basename === 'claude' || basename.startsWith('claude.')) {
-      return cmd
+      agent = 'claude-code'
+    } else if (lower === 'codex' || lower.startsWith('codex.') || lower.startsWith('codex ')) {
+      agent = 'codex'
+    }
+    if (agent && (!target || agent === target)) {
+      return { agent, cmdline: cmd }
     }
     pid = parentPid
   }
   return null
+}
+
+/**
+ * §50: detect which agent spawned us. Used by plugin register to set the
+ * correct `agent` field. Default to `claude-code` for back-compat when
+ * we can't tell — daemon accepts that string and CC has been the only
+ * runtime for the first 0.x.
+ */
+export function detectParentAgent(): 'claude-code' | 'codex' {
+  const hit = findAgentAncestor()
+  return hit?.agent ?? 'claude-code'
 }
 
 /**

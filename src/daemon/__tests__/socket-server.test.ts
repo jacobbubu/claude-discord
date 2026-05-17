@@ -80,11 +80,13 @@ describe('startSocketServer', () => {
   })
 
   it('rejects register with unknown agent', async () => {
+    // §51: claude-code and codex are both accepted now; anything else is
+    // still rejected. Use a clearly bogus string to trip the allowlist.
     const registerLine =
       JSON.stringify({
         type: 'register',
         v: PROTOCOL_VERSION,
-        agent: 'codex',
+        agent: 'random-other-agent',
         cwd: '/x/foo',
         pid: 1,
         capabilities: [],
@@ -98,6 +100,28 @@ describe('startSocketServer', () => {
     const reject = JSON.parse(replies[0]!)
     expect(reject.type).toBe('register_reject')
     expect(reject.reason).toBe('unknown_agent')
+  })
+
+  it('§51: accepts register with agent="codex"', async () => {
+    const registerLine =
+      JSON.stringify({
+        type: 'register',
+        v: PROTOCOL_VERSION,
+        agent: 'codex',
+        cwd: '/x/codex-ws',
+        pid: 1,
+        capabilities: [],
+      }) + '\n'
+
+    const replies = await sendAndCollect(
+      join(stateDir, 'daemon.sock'),
+      registerLine,
+      200,
+    )
+    const ack = JSON.parse(replies[0]!)
+    expect(ack.type).toBe('register_ack')
+    expect(ack.workspace).toBe('codex-ws')
+    expect(registry.has('codex-ws')).toBe(true)
   })
 
   it('echoes tool_call as tool_result (slice 2 stub behavior)', async () => {

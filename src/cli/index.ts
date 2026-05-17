@@ -24,6 +24,7 @@ import {
 import { configure } from './configure.ts'
 import { dev } from './dev.ts'
 import { install } from './install.ts'
+import { installCodex, uninstallCodex } from './install-codex.ts'
 import { installHook, uninstallHook } from './install-hook.ts'
 import { logs } from './logs.ts'
 import { reset } from './reset.ts'
@@ -141,6 +142,17 @@ program
   .command('uninstall-hook')
   .description('remove the PreToolUse hook from ~/.claude/settings.json')
   .action(() => uninstallHook())
+
+// §49: Codex desktop / CLI / IDE register the MCP server via ~/.codex/config.toml
+program
+  .command('install-codex')
+  .description('register claude-discord MCP server in ~/.codex/config.toml (pull-only — see README Codex setup)')
+  .action(() => installCodex())
+
+program
+  .command('uninstall-codex')
+  .description('remove claude-discord MCP server from ~/.codex/config.toml')
+  .action(() => uninstallCodex())
 
 program
   .command('status')

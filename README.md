@@ -22,6 +22,11 @@ Built on top of Claude Code's MCP plugin system. Inspired by the
 rewritten from scratch (MIT) to handle **multiple** workspaces from a single
 bot, route by channel binding, and survive process restarts.
 
+Also works with **OpenAI Codex** (desktop / CLI / IDE) — Codex calls our
+MCP tools to send / read Discord (`reply`, `fetch_messages`, etc.). Auto-
+drive (Discord DM → Codex reply) isn't supported by Codex yet; see
+[Codex setup](#codex-setup) for the supported pull-only mode.
+
 ### What a working setup looks like
 
 ![claude-discord hero — Discord channel on the left (user prompt + bot reply),
@@ -180,6 +185,72 @@ Then in Discord:
 
 If anything stalls: `claude-discord-bot logs -f` while reproducing — most
 issues show up as a single warn / error line. See [Troubleshooting](#troubleshooting).
+
+---
+
+## Codex setup
+
+OpenAI Codex (desktop / CLI / IDE) can drive Discord through the same
+plugin. Codex shares MCP configuration via `~/.codex/config.toml`, so
+**we don't write a separate plugin** — same `src/plugin/index.ts`, just
+registered with Codex.
+
+### One-line install
+
+```bash
+claude-discord-bot install-codex
+```
+
+This appends a managed block to `~/.codex/config.toml`:
+
+```toml
+# claude-discord-bot install-codex (managed — do not edit by hand)
+[mcp_servers.claude-discord]
+command = "bun"
+args = ["run", "/.../src/plugin/index.ts"]
+# /claude-discord-bot install-codex
+```
+
+Idempotent. Restart Codex desktop / CLI to pick up the change.
+
+To remove: `claude-discord-bot uninstall-codex`.
+
+### What works (pull mode)
+
+Codex calls the same MCP tools as CC — these all work end-to-end:
+
+- `reply` — Codex sends a Discord message
+- `react` / `edit_message` / `thread_reply` — same
+- `fetch_messages` — Codex reads recent Discord history
+- `download_attachment` — Codex pulls a Discord file to local inbox
+- `whoami` — confirm the plugin is wired
+
+Inside Codex you'd typically say: _"Use claude-discord:reply to post …
+to chat_id X"_ or _"Use claude-discord:fetch_messages to check what's new
+in Discord channel Y"_.
+
+### What doesn't work yet (auto-drive / push)
+
+**Discord DM → Codex auto-response** is **not supported by Codex** today.
+When a Discord user messages the bot, the daemon pushes an MCP
+notification to Codex's plugin connection, but Codex doesn't (currently)
+route those notifications to the user-visible session — see OpenAI issues
+[#15299](https://github.com/openai/codex/issues/15299) and
+[#17543](https://github.com/openai/codex/issues/17543) tracking this.
+
+**Workaround**: have a Codex turn periodically (or on demand) call
+`fetch_messages` to read new traffic. Not as seamless as CC's channel
+mode, but works.
+
+Once OpenAI ships inbound-notification routing, our plugin requires no
+changes — the daemon already pushes the right MCP notification shape.
+
+### Hooks (not yet wired)
+
+Codex has its own hooks system (`PreToolUse` / `PostToolUse` /
+`PermissionRequest` / `Stop`) configurable in `~/.codex/config.toml`
+inline. `install-codex` doesn't currently write hook entries — Codex
+end of the permission relay + tool trace can be added later. PRs welcome.
 
 ---
 
@@ -402,8 +473,15 @@ claude-discord-bot reset --all --including-token --including-acl
 ```
 
 **What's the cost?**
-The Discord side is free (your bot). Claude Code's normal API costs apply
-for every turn the bot triggers.
+The Discord side is free (your bot). Claude Code's (or Codex's) normal
+API costs apply for every turn the bot triggers.
+
+**Does this work with OpenAI Codex?**
+Yes for pull-mode (Codex → Discord). One-line install:
+`claude-discord-bot install-codex`. Auto-drive (Discord DM → Codex
+auto-response) needs OpenAI to ship inbound MCP notification routing
+([#15299](https://github.com/openai/codex/issues/15299)). See
+[Codex setup](#codex-setup).
 
 ## Changelog
 

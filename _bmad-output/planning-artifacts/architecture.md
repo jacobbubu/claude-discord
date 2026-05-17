@@ -2334,3 +2334,57 @@ semantic-release 默认从最近的 `v*` git tag 起算 commits。我们仓库�
 - 如果觉得 dist 构建有价值（Node-only 用户），后续可加 `bun build` 阶段 + `bin` 指向 dist。当前 macOS+Bun 限制下源码直发够用
 
 bump 0.0.46 → 0.0.47（实际下次 release 由 semantic-release 决定）。
+
+### 48. daemon 启动日志加版本号
+
+**背景。** `claude-discord-bot start` 启动日志没版本信息，用户从 npm / git clone / 不同 install 切换时辨识不清当前运行哪个 0.x。
+
+**改动。**
+
+- 新 `src/shared/package-version.ts`：`readPackageVersion()` 向上查最近的 `claude-discord-bot` package.json（dev / dist / npm install 路径都能 work）
+- `src/cli/index.ts` 旧本地副本拿掉，改 import 共享 helper
+- `src/daemon/index.ts runDaemon()` 启动 log 加 `claude-discord-bot v<X>` 前缀
+
+bump 0.0.47 → 0.1.0（semantic-release 自动）。
+
+### 49-52. Codex 桌面 / CLI 集成（pull-only）
+
+**背景。** Spike 10（`spikes/10-codex-mcp/RESULTS.md`）验证 Codex 桌面经 `~/.codex/config.toml` 的 `[mcp_servers.<name>]` 能直接拉起我们的 plugin，调 `reply` / `fetch_messages` 等 MCP 工具端到端工作。Discord → Codex 自动响应（push）当前不可用（OpenAI #15299 / #17543 跟踪）。
+
+#### §49. install-codex / uninstall-codex CLI
+
+- 新 `src/cli/install-codex.ts`：surgical text edit `~/.codex/config.toml`（不走 TOML 反序列化，保留用户 comment / ordering）
+- `addCodexEntry` / `removeCodexEntry` 纯函数：marker-fenced 块 `# claude-discord-bot install-codex (managed — do not edit by hand)` ... `# /claude-discord-bot install-codex`
+- 兼容用户手工写的 legacy section（无 marker）
+- 幂等
+
+#### §50. plugin agent detection
+
+- `src/plugin/connect-policy.ts` 加 `findAgentAncestor()` + `detectParentAgent(): 'claude-code' | 'codex'`：ancestor 进程 basename 匹配 `claude` / `codex`（case-insensitive）
+- `src/plugin/index.ts` 启动时调 `detectParentAgent()` 替代硬编码 `PLUGIN_AGENT = 'claude-code'`
+- 检测失败默认 `claude-code`（向后兼容）
+
+#### §51. daemon socket-server 接受 codex agent
+
+- `socket-server.ts handleRegister` 把 `msg.agent !== 'claude-code'` 单值检查改成 allowlist `['claude-code', 'codex']`
+- 测试更新：之前用 `'codex'` 当 "unknown agent" 测，改成 `'random-other-agent'`；加一条 `§51: accepts codex` 正向 case
+
+#### §52. README + spike 总结
+
+- README 头部加 Codex 支持声明 + 链接到新 "Codex setup" 段
+- 新 "Codex setup" 段：install-codex 一行命令、什么能用（pull）、什么不能用（push，等 OpenAI）、hooks 留 TBD
+- FAQ 加 Codex 条目
+- spike 10 RESULTS.md 更新到完整成功状态
+
+**取舍。**
+
+- 没碰 hooks 适配（permission / trace 路由）—— Codex 端有 hooks 系统但配置格式 / payload 跟 CC 不同，单做一项 PR
+- agent 字段保留两个值（`claude-code` / `codex`），不引入 `agent: string` 任意化 —— allowlist 防止 stray client 占注册表
+
+**测试覆盖。**
+
+- `install-codex.test.ts` 11 例（add / remove / idempotent / 兼容 legacy / 保留其他 section）
+- `socket-server.test.ts` 加 codex accept 正向
+- CLI smoke list 加 `install-codex` / `uninstall-codex`
+
+bump 0.1.0 → 0.2.0（feat → minor）。

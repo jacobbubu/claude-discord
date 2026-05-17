@@ -287,7 +287,10 @@ function handleRegister(
     return
   }
 
-  if (msg.agent !== 'claude-code') {
+  // §51: accept claude-code OR codex. Plugin detects parent agent at
+  // startup (§50) and reports accordingly. Other values still rejected so
+  // a stray client can't squat the registry.
+  if (msg.agent !== 'claude-code' && msg.agent !== 'codex') {
     conn.send({
       type: 'register_reject',
       v: PROTOCOL_VERSION,

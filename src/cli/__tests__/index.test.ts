@@ -56,6 +56,8 @@ describe('CLI smoke (§46)', () => {
       'uninstall',
       'install-hook',
       'uninstall-hook',
+      'install-codex',
+      'uninstall-codex',
       'status',
       'dev',
       'reset',
