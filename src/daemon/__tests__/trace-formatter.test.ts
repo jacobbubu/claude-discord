@@ -5,6 +5,7 @@ import {
   clampDescription,
   jsonToYaml,
   renderTraceContent,
+  toolIcon,
 } from '../trace-formatter.ts'
 
 function trace(overrides: Partial<CcToolTraceMsg> = {}): CcToolTraceMsg {
@@ -76,6 +77,24 @@ describe('renderTraceContent (deltas §40)', () => {
       )
       expect(r.description).toContain('```text\nhi\n```')
     })
+
+    it('§40-fix: unwraps generic envelope when Bash shape keys are missing', () => {
+      // E.g. response arrived wrapped as `{content: [{type, text}]}` instead
+      // of `{stdout, stderr, exitCode}`. Should still extract clean stdout
+      // instead of dumping the JSON envelope.
+      const r = renderTraceContent(
+        trace({
+          tool_name: 'Bash',
+          tool_input: JSON.stringify({ command: 'ls' }),
+          tool_response: JSON.stringify({
+            content: [{ type: 'text', text: 'a.ts\nb.ts\n' }],
+          }),
+          status: 'ok',
+        }),
+      )
+      expect(r.description).toContain('```text\na.ts\nb.ts')
+      expect(r.description).not.toContain('"content"')
+    })
   })
 
   describe('Read', () => {
@@ -96,6 +115,62 @@ describe('renderTraceContent (deltas §40)', () => {
       const range = r.fields!.find(f => f.name === 'Range')!
       expect(range.value).toBe('10–14')
     })
+
+    it('§40-fix: unwraps CC structured response { type, file: { content } }', () => {
+      const r = renderTraceContent(
+        trace({
+          tool_name: 'Read',
+          tool_input: JSON.stringify({ file_path: '/src/x.ts' }),
+          tool_response: JSON.stringify({
+            type: 'text',
+            file: { filePath: '/src/x.ts', content: 'line one\nline two\n' },
+          }),
+        }),
+      )
+      expect(r.description).toContain('```text\nline one\nline two')
+      // Should NOT leak the wrapper fields:
+      expect(r.description).not.toContain('"filePath"')
+      expect(r.description).not.toContain('"type":"text"')
+    })
+
+    it('§40-fix: unwraps CC structured response { type, file: [{ content }] } (array shape)', () => {
+      const r = renderTraceContent(
+        trace({
+          tool_name: 'Read',
+          tool_input: JSON.stringify({ file_path: '/src/y.ts' }),
+          tool_response: JSON.stringify({
+            type: 'text',
+            file: [{ filePath: '/src/y.ts', content: 'array shape content\n' }],
+          }),
+        }),
+      )
+      expect(r.description).toContain('```text\narray shape content')
+    })
+
+    it('§40-fix: falls back to raw string when shape is unknown', () => {
+      const r = renderTraceContent(
+        trace({
+          tool_name: 'Read',
+          tool_input: JSON.stringify({ file_path: '/src/z.ts' }),
+          tool_response: 'plain string content',
+        }),
+      )
+      expect(r.description).toContain('```text\nplain string content')
+    })
+
+    it('§40-fix: unwraps Anthropic content-array shape { content: [{ type, text }] }', () => {
+      const r = renderTraceContent(
+        trace({
+          tool_name: 'Read',
+          tool_input: JSON.stringify({ file_path: '/src/a.ts' }),
+          tool_response: JSON.stringify({
+            content: [{ type: 'text', text: 'array envelope body' }],
+          }),
+        }),
+      )
+      expect(r.description).toContain('array envelope body')
+      expect(r.description).not.toContain('"type"')
+    })
   })
 
   describe('Grep', () => {
@@ -111,6 +186,18 @@ describe('renderTraceContent (deltas §40)', () => {
       expect(f).toContain('Pattern=`TODO`')
       expect(f).toContain('Path=`src/`')
       expect(r.description).toContain('```text\nsrc/a.ts:12: // TODO refactor\n```')
+    })
+
+    it('unwraps {type:"text", text:"..."} envelope', () => {
+      const r = renderTraceContent(
+        trace({
+          tool_name: 'Grep',
+          tool_input: JSON.stringify({ pattern: 'foo' }),
+          tool_response: JSON.stringify({ type: 'text', text: 'a.ts:1:foo' }),
+        }),
+      )
+      expect(r.description).toContain('a.ts:1:foo')
+      expect(r.description).not.toContain('"type"')
     })
   })
 
@@ -239,6 +326,24 @@ describe('jsonToYaml (deltas §40)', () => {
     expect(y).toContain('items:')
     expect(y).toContain('- id: 1')
     expect(y).toContain('- id: 2')
+  })
+})
+
+describe('toolIcon (deltas §40-fix)', () => {
+  it('returns per-tool emojis for known tools', () => {
+    expect(toolIcon('Bash')).toBe('💻')
+    expect(toolIcon('Read')).toBe('📖')
+    expect(toolIcon('Grep')).toBe('🔍')
+    expect(toolIcon('Glob')).toBe('📁')
+    expect(toolIcon('Edit')).toBe('✏️')
+    expect(toolIcon('MultiEdit')).toBe('✏️')
+    expect(toolIcon('Write')).toBe('📝')
+    expect(toolIcon('WebFetch')).toBe('🌐')
+    expect(toolIcon('WebSearch')).toBe('🔎')
+  })
+
+  it('falls back to wrench for unknown tools', () => {
+    expect(toolIcon('SomeUnknownTool')).toBe('🔧')
   })
 })
 

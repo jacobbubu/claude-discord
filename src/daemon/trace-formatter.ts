@@ -20,6 +20,35 @@ export type EmbedField = { name: string; value: string; inline?: boolean }
 export type TraceContent = { description: string; fields?: EmbedField[] }
 
 /**
+ * Per-tool emoji icon for the embed title. Falls back to the generic wrench
+ * for unknown tools so the title still reads cleanly. Error status overrides
+ * this in tool-trace.ts (renders ❌ instead).
+ */
+export function toolIcon(toolName: string): string {
+  switch (toolName) {
+    case 'Bash':
+      return '💻'
+    case 'Read':
+      return '📖'
+    case 'Grep':
+      return '🔍'
+    case 'Glob':
+      return '📁'
+    case 'Edit':
+    case 'MultiEdit':
+      return '✏️'
+    case 'Write':
+      return '📝'
+    case 'WebFetch':
+      return '🌐'
+    case 'WebSearch':
+      return '🔎'
+    default:
+      return '🔧'
+  }
+}
+
+/**
  * Main entry. Routes to a per-tool renderer; falls back to YAML dump for
  * unknown tools or when input parse fails.
  */
@@ -53,9 +82,14 @@ function renderBash(input: unknown, response: string, status: 'ok' | 'error'): T
   const cmd = pickString(input, 'command')
   const intent = pickString(input, 'description')
   const parsed = safeParseJson(response)
-  const stdout = pickString(parsed, 'stdout') ?? response // Bash responses are objects; plain string is a graceful fallback
+  // Bash's structured shape carries stdout/stderr/exitCode as top-level keys.
+  // If the response is wrapped in a different envelope (e.g. Anthropic API
+  // tool_result `{content:[{type,text}]}`), fall back to the generic content
+  // extractor so we don't surface a raw JSON dump in the embed.
+  const stdoutTop = pickString(parsed, 'stdout')
   const stderr = pickString(parsed, 'stderr')
   const exitCode = pickNumber(parsed, 'exitCode')
+  const stdout = stdoutTop ?? extractToolText(response)
 
   const sections: string[] = []
   if (cmd) sections.push(`**Command**\n${fence('bash', cmd)}`)
@@ -81,8 +115,58 @@ function renderRead(input: unknown, response: string): TraceContent {
     const end = limit != null ? start + limit - 1 : '?'
     fields.push({ name: 'Range', value: `${start}–${end}`, inline: true })
   }
-  return { description: clampDescription(fence('text', response)), fields }
+  return { description: clampDescription(fence('text', extractToolText(response))), fields }
 }
+
+/**
+ * Unwrap CC's structured tool-response shapes so the trace embed shows the
+ * actual content instead of a JSON dump with metadata. Handles the common
+ * shapes returned by Read / Grep / Glob / WebFetch / WebSearch:
+ *   - `{ type: 'text', text: '...content...' }`
+ *   - `{ type: 'text', file: { filePath, content } }`           (Read object)
+ *   - `{ type: 'text', file: [{ filePath, content }] }`         (Read array)
+ *   - `{ content: '...' }`                                      (generic)
+ * Anything else falls back to the raw response string (covers plain-string
+ * outputs from simpler tools).
+ *
+ * Pure for unit-testability.
+ */
+export function extractToolText(response: string): string {
+  const parsed = safeParseJson(response)
+  if (parsed == null || typeof parsed !== 'object') return response
+  const obj = parsed as Record<string, unknown>
+
+  // Read's file-content wrappers (both array and object shape).
+  const file = obj.file
+  if (Array.isArray(file) && file.length > 0) {
+    const inner = file[0]
+    if (inner && typeof inner === 'object') {
+      const c = (inner as Record<string, unknown>).content
+      if (typeof c === 'string') return c
+    }
+  } else if (file && typeof file === 'object') {
+    const c = (file as Record<string, unknown>).content
+    if (typeof c === 'string') return c
+  }
+
+  // Standard `{type:'text', text:'...'}` envelope (Grep/Glob/Web* likely).
+  if (typeof obj.text === 'string') return obj.text
+  // Generic `{content:'...'}` envelope (string).
+  if (typeof obj.content === 'string') return obj.content
+  // Anthropic API tool_result shape: `{content: [{type:'text', text:'...'}, ...]}`.
+  if (Array.isArray(obj.content) && obj.content.length > 0) {
+    const first = obj.content[0]
+    if (first && typeof first === 'object') {
+      const t = (first as Record<string, unknown>).text
+      if (typeof t === 'string') return t
+    }
+  }
+
+  return response
+}
+
+/** §40-fix: kept for callers that imported the old narrow name. */
+export const extractReadContent = extractToolText
 
 function renderGrep(input: unknown, response: string): TraceContent {
   const pattern = pickString(input, 'pattern')
@@ -90,7 +174,7 @@ function renderGrep(input: unknown, response: string): TraceContent {
   const fields: EmbedField[] = []
   if (pattern) fields.push({ name: 'Pattern', value: `\`${pattern}\``, inline: true })
   if (path) fields.push({ name: 'Path', value: `\`${path}\``, inline: true })
-  return { description: clampDescription(fence('text', response)), fields }
+  return { description: clampDescription(fence('text', extractToolText(response))), fields }
 }
 
 function renderGlob(input: unknown, response: string): TraceContent {
@@ -99,21 +183,21 @@ function renderGlob(input: unknown, response: string): TraceContent {
   const fields: EmbedField[] = []
   if (pattern) fields.push({ name: 'Pattern', value: `\`${pattern}\``, inline: true })
   if (path) fields.push({ name: 'Path', value: `\`${path}\``, inline: true })
-  return { description: clampDescription(fence('text', response)), fields }
+  return { description: clampDescription(fence('text', extractToolText(response))), fields }
 }
 
 function renderWebFetch(input: unknown, response: string): TraceContent {
   const url = pickString(input, 'url')
   const fields: EmbedField[] = []
   if (url) fields.push({ name: 'URL', value: url, inline: false })
-  return { description: clampDescription(fence('text', response)), fields }
+  return { description: clampDescription(fence('text', extractToolText(response))), fields }
 }
 
 function renderWebSearch(input: unknown, response: string): TraceContent {
   const query = pickString(input, 'query')
   const fields: EmbedField[] = []
   if (query) fields.push({ name: 'Query', value: `\`${query}\``, inline: true })
-  return { description: clampDescription(fence('text', response)), fields }
+  return { description: clampDescription(fence('text', extractToolText(response))), fields }
 }
 
 function renderFileWrite(
