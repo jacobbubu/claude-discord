@@ -19,6 +19,15 @@ Built on top of Claude Code's MCP plugin system. Inspired by the
 rewritten from scratch (MIT) to handle **multiple** workspaces from a single
 bot, route by channel binding, and survive process restarts.
 
+### What a working setup looks like
+
+<!-- TODO: drop a real screenshot here. Suggested capture: a Discord channel
+     where the user DM'd the bot "summarize this PR", and the reply card +
+     trace thread (with Bash/Read/Edit embeds) are both visible. -->
+
+> _Screenshot pending — capture: Discord channel showing a user prompt, the
+> bot reply, and the auto-opened trace thread with tool I/O embeds._
+
 ## Quick start (≈ 10 min)
 
 > Requires **macOS**, **Bun 1.x** (install:
@@ -142,6 +151,27 @@ In Discord:
 CC's responses come back via the `reply` tool. Tool calls (Bash / Read /
 Edit / …) get auto-collected into a trace thread under each reply for
 audit.
+
+### 8. Verify
+
+After the 6 setup steps, sanity-check:
+
+```bash
+claude-discord-bot status      # daemon + service state + state files
+claude-discord-bot logs -f     # follow daemon logs in another terminal
+```
+
+Then in Discord:
+
+1. DM your bot `hello` → bot should reply within ~10s.
+2. `/list` in any channel → should list your active CC workspaces.
+3. `/use <workspace>` in a guild channel → reply `✅ switched to <workspace>`.
+4. Send a message in that channel like `list the files in src/` → expect
+   CC to reply + a trace thread to open underneath with the `Bash` / `LS`
+   tool call.
+
+If anything stalls: `claude-discord-bot logs -f` while reproducing — most
+issues show up as a single warn / error line. See [Troubleshooting](#troubleshooting).
 
 ---
 
@@ -306,6 +336,70 @@ Trust boundary:
 - `assertSendable` refuses outbound `reply.files` paths inside the state
   dir except `inbox/` (downloaded attachments).
 - Daemon socket lives in mode-`0o700` state dir; only your user can connect.
+
+## Glossary
+
+| Term | What it means |
+| --- | --- |
+| **workspace** | A live CC session — one CC process started with `--channels plugin:claude-discord@jacobbubu` in a given project directory. Name defaults to the directory's basename. |
+| **channel mode** | CC's mode that lets external plugins (us) push messages into the session. Without it CC only sends what you type into its TUI; with it, Discord DMs auto-arrive. Requires the macOS managed-settings.json edit in step 5. |
+| **pairing** | First-DM handshake: an unknown Discord user DMs the bot, the bot replies with a 6-hex code, you confirm the code on the terminal via `claude-discord-bot pair <code>` — only then is the sender in `allowFrom`. |
+| **trace thread** | Per-turn Discord thread that auto-opens under a CC reply when the PostToolUse hook is installed. Each tool call (Bash / Read / Edit / …) lands as one embed. Auto-archives when the turn ends (Stop hook). |
+| **hook** | A subprocess CC spawns for PreToolUse / PostToolUse / Stop / etc. events. We register three (`install-hook`) for permission routing, tool trace, and turn-end signal. |
+| **routing** | The per-channel binding `channel-id → workspace`. Set by `/use`, persisted in `~/.claude/channels/discord/routing.json`. |
+| **allowFrom** | Set of Discord user IDs that may DM the bot. Built via pairing or `claude-discord-bot allow <id>`. |
+| **group** | Guild channel opted-in for the bot (`group add <channelId>`). DM allowFrom + group together gate who can drive CC. |
+| **DM policy** | `pairing` (default — first DM gets a code) / `allowlist` (silent drop unless in allowFrom) / `disabled` (no DMs). |
+
+## FAQ
+
+**Can I run this on a server instead of my laptop?**
+Yes — the daemon is just a long-running process. Install it as a systemd
+unit on the same machine you run CC, or run it in a tmux session on a
+remote box that hosts CC.
+
+**Does it work when CC is on multiple machines?**
+One CC session = one workspace = one machine. The daemon is per-machine.
+If you run CC on laptop + desktop, run a daemon on each + use different
+bot tokens (or share the bot but bind different channels). No mesh.
+
+**My bot is in multiple Discord servers. Will it leak between them?**
+Each guild channel must be opted in via `group add <channelId>` (or by
+the `groupPolicyDefaults` config). DMs are gated by `allowFrom`. The bot
+ignores everything else.
+
+**Can I skip the hooks (step 4)?**
+Yes — DMs still get to CC and CC can still reply. You lose: trace threads
+(no tool I/O visibility in Discord), Discord-routed permission prompts
+(they prompt in CC's TUI instead), precise `/cancel`. See the [hooks
+table](#hooks-table).
+
+**Difference from the [official Discord plugin](https://github.com/anthropics/claude-plugins/tree/main/external_plugins/discord)?**
+The official plugin is single-CC, single-channel. claude-discord routes
+**N** CC workspaces through **one** bot, switches via `/use <workspace>`,
+auto-collects tool traces into per-turn threads, and survives daemon
+restarts (in-memory state + `~/.claude/channels/discord/*.json`).
+
+**Will the bot read my private DMs to other users?**
+No. Bots can only see DMs sent **to the bot**.
+
+**How do I fully uninstall?**
+
+```bash
+claude-discord-bot uninstall          # remove launchd / systemd service
+claude-discord-bot uninstall-hook     # remove ~/.claude/settings.json hooks
+claude-discord-bot reset --all --including-token --including-acl
+# then in CC: /plugin uninstall claude-discord@jacobbubu
+# remove the managed-settings.json edit if you made it
+```
+
+**What's the cost?**
+The Discord side is free (your bot). Claude Code's normal API costs apply
+for every turn the bot triggers.
+
+## Changelog
+
+See [CHANGELOG.md](./CHANGELOG.md) for release history.
 
 ## Contributing
 
