@@ -1,5 +1,8 @@
 # claude-discord
 
+[![npm version](https://img.shields.io/npm/v/claude-discord-bot.svg)](https://www.npmjs.com/package/claude-discord-bot)
+[![license](https://img.shields.io/npm/l/claude-discord-bot.svg)](./LICENSE)
+
 **Drive Claude Code from Discord.** Send a DM (or a slash command in any
 guild channel) → your Claude Code workspace at home picks it up and replies.
 One bot can route to many workspaces; switch between them with

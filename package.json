@@ -1,10 +1,35 @@
 {
   "name": "claude-discord-bot",
   "version": "0.0.47",
-  "description": "A Claude Code Discord plugin \u2014 machine-level agent gateway daemon for Discord \u00d7 Claude Code",
+  "description": "Drive Claude Code from Discord — machine-level agent gateway daemon. One bot routes to N CC workspaces via channel binding (`/use <workspace>`).",
   "type": "module",
   "license": "MIT",
-  "private": true,
+  "author": "jacobbubu",
+  "homepage": "https://github.com/jacobbubu/claude-discord#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jacobbubu/claude-discord.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jacobbubu/claude-discord/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "discord",
+    "mcp",
+    "bot",
+    "agent",
+    "gateway",
+    "daemon"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "src",
+    ".claude-plugin",
+    "CONTRIBUTING.md"
+  ],
   "bin": {
     "claude-discord-bot": "./src/cli/index.ts"
   },
@@ -24,8 +49,12 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/exec": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
     "@types/bun": "latest",
     "@vitest/coverage-v8": "^4.1.5",
+    "semantic-release": "^24.2.0",
     "typescript": "^5.9.0",
     "vitest": "^4.0.0"
   }

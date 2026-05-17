@@ -164,3 +164,45 @@ bun run check       # typecheck + tests must pass
 
 If you touched the daemon or plugin schema, also restart the daemon
 locally and verify a Discord round-trip — `bun run test` mocks Discord.
+
+## Releases
+
+Releases are **automatic**. Every merge to `main` runs
+`.github/workflows/release.yml`:
+
+1. `bun install --frozen-lockfile` → `bun run check`
+2. `semantic-release` reads commit messages since the last `v*` tag
+3. Computes next version using Conventional Commits:
+   - `feat: …` → minor bump
+   - `fix: …` / `perf: …` / `refactor: …` → patch bump
+   - `feat!: …` or `BREAKING CHANGE:` in body → major bump
+   - `chore: …` / `docs: …` / `test: …` → no release
+4. Writes `CHANGELOG.md`, bumps `package.json` + `.claude-plugin/plugin.json`
+   (via `scripts/sync-plugin-version.mjs`), `git commit + tag v<N>` back to
+   `main`
+5. Publishes to npm as `claude-discord-bot`
+6. Creates a GitHub Release with the auto-generated notes
+
+The plugin marketplace (`/plugin install claude-discord@jacobbubu`) pulls
+the same git tag from this repo — npm and marketplace versions stay
+locked.
+
+### Trigger a release manually
+
+GitHub UI → Actions → Release → "Run workflow" on `main`. Same pipeline,
+just on demand.
+
+### Why semantic-release
+
+Manual version bumps drift (we discovered `--version` was lying about
+`0.0.1` while real releases hit 0.0.40+). Auto-bump + auto-CHANGELOG kills
+the drift class entirely. Trade-off: commit message discipline matters
+(`type: subject` format required).
+
+### Required secrets
+
+- `NPM_TOKEN`: an "Automation" token from
+  <https://www.npmjs.com/settings/jacobbubu/tokens>. Add via repo
+  Settings → Secrets and variables → Actions.
+- `GITHUB_TOKEN`: provided by GitHub Actions automatically; no setup
+  needed.
