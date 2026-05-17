@@ -20,6 +20,35 @@ export type EmbedField = { name: string; value: string; inline?: boolean }
 export type TraceContent = { description: string; fields?: EmbedField[] }
 
 /**
+ * Per-tool emoji icon for the embed title. Falls back to the generic wrench
+ * for unknown tools so the title still reads cleanly. Error status overrides
+ * this in tool-trace.ts (renders ❌ instead).
+ */
+export function toolIcon(toolName: string): string {
+  switch (toolName) {
+    case 'Bash':
+      return '💻'
+    case 'Read':
+      return '📖'
+    case 'Grep':
+      return '🔍'
+    case 'Glob':
+      return '📁'
+    case 'Edit':
+    case 'MultiEdit':
+      return '✏️'
+    case 'Write':
+      return '📝'
+    case 'WebFetch':
+      return '🌐'
+    case 'WebSearch':
+      return '🔎'
+    default:
+      return '🔧'
+  }
+}
+
+/**
  * Main entry. Routes to a per-tool renderer; falls back to YAML dump for
  * unknown tools or when input parse fails.
  */

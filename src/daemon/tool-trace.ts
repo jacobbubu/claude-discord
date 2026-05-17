@@ -21,7 +21,7 @@ import type { Connection } from './connection.ts'
 import { renderDiffImage as defaultRenderDiffImage } from './diff-image-renderer.ts'
 import type { DiscordGateway } from './discord-gateway.ts'
 import type { WorkspaceRegistry } from './registry.ts'
-import { renderTraceContent } from './trace-formatter.ts'
+import { renderTraceContent, toolIcon } from './trace-formatter.ts'
 
 const EMBED_DESC_MAX = 4000 // Discord embed.description hard limit is 4096
 const THREAD_AUTO_ARCHIVE_MIN = 60
@@ -121,7 +121,9 @@ export class ToolTraceRelay {
         log.warn(`cc_tool_trace: thread ${threadId} unfetchable or not text-based`)
         return
       }
-      const icon = msg.status === 'error' ? '❌' : '🔧'
+      // §40-fix: per-tool icon makes it easier to scan a thread full of
+      // traces; error status still wins (red ❌ supersedes the tool icon).
+      const icon = msg.status === 'error' ? '❌' : toolIcon(msg.tool_name)
       // §40: per-tool text renderer — Bash splits command / stdout / stderr,
       // Read/Grep/Glob/etc. have their own layouts, unknown tools fall back to
       // YAML. fields surface short structured metadata (status / file / etc.)
@@ -131,7 +133,9 @@ export class ToolTraceRelay {
         .setTitle(`${icon} ${msg.tool_name}`)
         .setDescription(content.description)
         .setColor(msg.status === 'error' ? 0xed4245 : 0x5865f2)
-        .setFooter({ text: new Date().toISOString() })
+        // §40-fix: native timestamp renders as relative time on hover instead
+        // of a static ISO string in the footer.
+        .setTimestamp(new Date())
       if (content.fields && content.fields.length > 0) {
         embed.addFields(content.fields)
       }

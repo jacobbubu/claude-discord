@@ -5,6 +5,7 @@ import {
   clampDescription,
   jsonToYaml,
   renderTraceContent,
+  toolIcon,
 } from '../trace-formatter.ts'
 
 function trace(overrides: Partial<CcToolTraceMsg> = {}): CcToolTraceMsg {
@@ -325,6 +326,24 @@ describe('jsonToYaml (deltas §40)', () => {
     expect(y).toContain('items:')
     expect(y).toContain('- id: 1')
     expect(y).toContain('- id: 2')
+  })
+})
+
+describe('toolIcon (deltas §40-fix)', () => {
+  it('returns per-tool emojis for known tools', () => {
+    expect(toolIcon('Bash')).toBe('💻')
+    expect(toolIcon('Read')).toBe('📖')
+    expect(toolIcon('Grep')).toBe('🔍')
+    expect(toolIcon('Glob')).toBe('📁')
+    expect(toolIcon('Edit')).toBe('✏️')
+    expect(toolIcon('MultiEdit')).toBe('✏️')
+    expect(toolIcon('Write')).toBe('📝')
+    expect(toolIcon('WebFetch')).toBe('🌐')
+    expect(toolIcon('WebSearch')).toBe('🔎')
+  })
+
+  it('falls back to wrench for unknown tools', () => {
+    expect(toolIcon('SomeUnknownTool')).toBe('🔧')
   })
 })
 
