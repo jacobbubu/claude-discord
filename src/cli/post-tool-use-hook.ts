@@ -63,6 +63,63 @@ function stringifyMaybe(x: unknown): string {
 }
 
 /**
+ * Recursively truncate string values inside an object/array in place.
+ * Non-string scalars (number, boolean, null) are untouched. Used by
+ * `compactToolResponse` to keep JSON structure intact when shortening long
+ * `stdout` / `content` payloads.
+ */
+function truncateStringsDeep(value: unknown, max: number): void {
+  if (value == null || typeof value !== 'object') return
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const v = value[i]
+      if (typeof v === 'string') {
+        value[i] = truncate(v, max)
+      } else {
+        truncateStringsDeep(v, max)
+      }
+    }
+    return
+  }
+  const obj = value as Record<string, unknown>
+  for (const k of Object.keys(obj)) {
+    const v = obj[k]
+    if (typeof v === 'string') {
+      obj[k] = truncate(v, max)
+    } else {
+      truncateStringsDeep(v, max)
+    }
+  }
+}
+
+/**
+ * Serialize `tool_response` for the trace wire, ensuring the result is always
+ * valid JSON (or a plain string). The naive `truncate(stringifyMaybe(x))`
+ * approach cuts JSON in the middle when string fields are long, leaving the
+ * daemon with un-parseable input — Bash's `{stdout:"<long>"...}` envelope hits
+ * this on grep / long-output commands. Instead, structured responses get
+ * per-field truncation so the renderer can still parse and pull out
+ * `stdout` / `file.content` / etc.
+ */
+export function compactToolResponse(r: unknown, max = FIELD_MAX): string {
+  if (typeof r === 'string') return truncate(r, max)
+  if (r == null || typeof r !== 'object') return stringifyMaybe(r)
+  let cloned: unknown
+  try {
+    cloned = JSON.parse(JSON.stringify(r))
+  } catch {
+    // Cycles / unserializable → fall back to old behavior.
+    return truncate(stringifyMaybe(r), max)
+  }
+  truncateStringsDeep(cloned, max)
+  try {
+    return JSON.stringify(cloned)
+  } catch {
+    return truncate(stringifyMaybe(r), max)
+  }
+}
+
+/**
  * Derive ok/error status from CC's tool_response. CC wraps tool errors in an
  * object with `is_error: true` (Bash, etc) or simply returns a result object.
  * Plain strings are always 'ok'.
@@ -143,7 +200,10 @@ async function main(): Promise<void> {
     v: PROTOCOL_VERSION,
     tool_name: toolName,
     tool_input: truncate(stringifyMaybe(payload.tool_input)),
-    tool_response: truncate(stringifyMaybe(payload.tool_response)),
+    // §40-fix: structure-preserving truncation so renderers (which parse JSON
+    // to extract stdout / file.content / etc.) don't end up with a half-cut
+    // wrapper. See `compactToolResponse`.
+    tool_response: compactToolResponse(payload.tool_response),
     status: detectStatus(payload.tool_response),
     cwd: process.cwd(),
   }

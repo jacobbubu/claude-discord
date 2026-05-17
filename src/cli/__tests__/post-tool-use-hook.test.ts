@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { detectStatus, shouldSkip, truncate } from '../post-tool-use-hook.ts'
+import {
+  compactToolResponse,
+  detectStatus,
+  shouldSkip,
+  truncate,
+} from '../post-tool-use-hook.ts'
 
 describe('shouldSkip', () => {
   it('skips TodoWrite (internal CC tracker)', () => {
@@ -68,5 +73,72 @@ describe('detectStatus', () => {
   it('returns "ok" for null/undefined (no signal of error)', () => {
     expect(detectStatus(null)).toBe('ok')
     expect(detectStatus(undefined)).toBe('ok')
+  })
+})
+
+describe('compactToolResponse (§40-fix #110)', () => {
+  it('passes short strings through', () => {
+    expect(compactToolResponse('hi')).toBe('hi')
+  })
+
+  it('truncates long strings', () => {
+    const big = 'x'.repeat(2000)
+    const out = compactToolResponse(big, 100)
+    expect(out.length).toBeLessThanOrEqual(100)
+    expect(out).toContain('truncated')
+  })
+
+  it('keeps JSON valid when long stdout is truncated (Bash shape)', () => {
+    const big = 'src/foo:1: hit\n'.repeat(400) // ~6000 chars
+    const out = compactToolResponse({ stdout: big, stderr: '', exitCode: 0 })
+    const parsed = JSON.parse(out) as { stdout: string; stderr: string; exitCode: number }
+    expect(parsed.stdout.length).toBeLessThanOrEqual(1800)
+    expect(parsed.stdout).toContain('truncated')
+    expect(parsed.stderr).toBe('')
+    expect(parsed.exitCode).toBe(0)
+  })
+
+  it('truncates string fields recursively (Read shape)', () => {
+    const big = 'line\n'.repeat(2000)
+    const out = compactToolResponse({
+      type: 'text',
+      file: { filePath: '/x', content: big },
+    })
+    const parsed = JSON.parse(out) as {
+      type: string
+      file: { filePath: string; content: string }
+    }
+    expect(parsed.type).toBe('text')
+    expect(parsed.file.filePath).toBe('/x')
+    expect(parsed.file.content.length).toBeLessThanOrEqual(1800)
+    expect(parsed.file.content).toContain('truncated')
+  })
+
+  it('handles arrays of objects', () => {
+    const big = 'y'.repeat(2000)
+    const out = compactToolResponse({
+      content: [{ type: 'text', text: big }],
+    })
+    const parsed = JSON.parse(out) as { content: { type: string; text: string }[] }
+    expect(parsed.content[0]!.type).toBe('text')
+    expect(parsed.content[0]!.text.length).toBeLessThanOrEqual(1800)
+  })
+
+  it('preserves non-string scalars (numbers / booleans / null)', () => {
+    const out = compactToolResponse({
+      stdout: 'short',
+      exitCode: 1,
+      interrupted: false,
+      meta: null,
+    })
+    const parsed = JSON.parse(out) as Record<string, unknown>
+    expect(parsed.exitCode).toBe(1)
+    expect(parsed.interrupted).toBe(false)
+    expect(parsed.meta).toBeNull()
+  })
+
+  it('null / undefined → empty string', () => {
+    expect(compactToolResponse(null)).toBe('')
+    expect(compactToolResponse(undefined)).toBe('')
   })
 })
