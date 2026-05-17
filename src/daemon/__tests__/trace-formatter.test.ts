@@ -76,6 +76,24 @@ describe('renderTraceContent (deltas §40)', () => {
       )
       expect(r.description).toContain('```text\nhi\n```')
     })
+
+    it('§40-fix: unwraps generic envelope when Bash shape keys are missing', () => {
+      // E.g. response arrived wrapped as `{content: [{type, text}]}` instead
+      // of `{stdout, stderr, exitCode}`. Should still extract clean stdout
+      // instead of dumping the JSON envelope.
+      const r = renderTraceContent(
+        trace({
+          tool_name: 'Bash',
+          tool_input: JSON.stringify({ command: 'ls' }),
+          tool_response: JSON.stringify({
+            content: [{ type: 'text', text: 'a.ts\nb.ts\n' }],
+          }),
+          status: 'ok',
+        }),
+      )
+      expect(r.description).toContain('```text\na.ts\nb.ts')
+      expect(r.description).not.toContain('"content"')
+    })
   })
 
   describe('Read', () => {
@@ -138,6 +156,20 @@ describe('renderTraceContent (deltas §40)', () => {
       )
       expect(r.description).toContain('```text\nplain string content')
     })
+
+    it('§40-fix: unwraps Anthropic content-array shape { content: [{ type, text }] }', () => {
+      const r = renderTraceContent(
+        trace({
+          tool_name: 'Read',
+          tool_input: JSON.stringify({ file_path: '/src/a.ts' }),
+          tool_response: JSON.stringify({
+            content: [{ type: 'text', text: 'array envelope body' }],
+          }),
+        }),
+      )
+      expect(r.description).toContain('array envelope body')
+      expect(r.description).not.toContain('"type"')
+    })
   })
 
   describe('Grep', () => {
@@ -153,6 +185,18 @@ describe('renderTraceContent (deltas §40)', () => {
       expect(f).toContain('Pattern=`TODO`')
       expect(f).toContain('Path=`src/`')
       expect(r.description).toContain('```text\nsrc/a.ts:12: // TODO refactor\n```')
+    })
+
+    it('unwraps {type:"text", text:"..."} envelope', () => {
+      const r = renderTraceContent(
+        trace({
+          tool_name: 'Grep',
+          tool_input: JSON.stringify({ pattern: 'foo' }),
+          tool_response: JSON.stringify({ type: 'text', text: 'a.ts:1:foo' }),
+        }),
+      )
+      expect(r.description).toContain('a.ts:1:foo')
+      expect(r.description).not.toContain('"type"')
     })
   })
 
