@@ -2223,3 +2223,49 @@ bump 0.0.41 → 0.0.42。
 - toolReply：embeds 数组 → channel.send 多 embed；embed + embeds 同传 → reject；>10 → reject；总字符 > 6000 → reject；旧 \`embed\` 仍工作；\`attachment://\` 在 image.url 保留
 
 bump 0.0.42 → 0.0.43。
+
+### 43. trace embed 改用 §42 multi-embed — meta + input + output 三段紧凑布局
+
+**背景。** §42 让一条 Discord 消息能装 10 个 embed，但 daemon 自己发的 trace embed 仍是单 embed（所有内容塞 description）。长 Bash / Read 输出经常被 4096 char 截断；视觉上一个胖卡片不如分段紧凑。
+
+**改动。**
+
+\`trace-formatter.ts\` 重写：
+
+- 新类型 \`TraceEmbedSpec = { title?, description?, color?, fields?, imageAttachment? }\` 和 \`TraceRender = { embeds: TraceEmbedSpec[] }\`
+- 新入口 \`renderTrace(msg): TraceRender\` 替代 \`renderTraceContent\`
+- 每个 per-tool renderer 返回多 embed：
+  - Bash：meta（💻 + Status / Intent / Interrupted? fields）+ Command（```bash```）+ stdout（```text```，非空才有）+ stderr（```text```，红色色条，非空才有）
+  - Read：meta（📖 + File / Range fields）+ Content（```text```）
+  - Grep / Glob：meta（icon + Pattern / Path fields）+ Hits / Matches
+  - WebFetch / WebSearch：meta（icon + URL/Query fields）+ Body / Results
+  - Edit / MultiEdit / Write：meta（icon + File field）+ Diff（```yaml``` body，\`imageAttachment = 'diff.png'\` 让 consumer 挂 §39 silicon PNG）
+  - 未知工具：meta + Input（```yaml```）+ Output（```yaml```）
+- 颜色：\`COLOR_OK = 0x5865f2\`（blurple）/ \`COLOR_ERROR = 0xed4245\`（红）；status=ok 时 meta + content 都用 blurple；status=error 时整组用红；stderr embed 总是红（即使整体 ok 也想抓眼睛）
+- 每 embed 独立 4096 char；combined 6000 cross-embed total（Discord cap）
+- 旧 \`renderTraceContent\` / \`TraceContent\` 删除；测试全迁
+
+\`tool-trace.ts postTraceEmbed\` 重写：
+
+- 调 \`renderTrace(msg)\` 拿 TraceRender → map 每个 spec 到 \`EmbedBuilder\`
+- error status：把第一 embed title 的 leading icon 替换成 ❌（错误信号优先）
+- \`setTimestamp(new Date())\` 只挂在最后一个 embed 上（视觉锚定底部）
+- §39 silicon PNG：找 \`imageAttachment === DIFF_IMAGE_NAME\` 的 spec → 挂 AttachmentBuilder + \`embed.setImage('attachment://diff.png')\`；没找到则附在最后一个 embed 上（fallback）
+- \`thread.send({ embeds, files? })\`
+
+**取舍。**
+
+- 视觉空间：每条 trace 多 1-3 个 embed，stacked tight 但占垂直高度更多。长输出值得，短 echo 略冗余 —— 接受
+- 字符预算从 4096 扩到 6000（cross-embed total），长 Bash / Read 不再被 \`clampDescription\` 截
+- DIFF_IMAGE_NAME 固定为 \`'diff.png'\` —— attachment:// URL 跟 file name 一致，简化关联
+
+**测试（共 -1）。**
+
+- \`renderTrace\` 各 per-tool 形态：embeds 长度 + title 序列 + fields 检查
+- Bash error / interrupted / 长 envelope fallback
+- Edit/MultiEdit/Write：\`imageAttachment\` 标记 + YAML body
+- 颜色语义：ok 全 blurple / error 全红 / stderr 始终红
+- \`extractToolText\` / \`jsonToYaml\` / \`clampDescription\` / \`toolIcon\` 单元
+- tool-trace.test.ts §39 集成：PNG attaches to body embed (索引 1) 不再是 meta；meta embed 无 image
+
+bump 0.0.43 → 0.0.44。

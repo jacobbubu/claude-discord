@@ -458,10 +458,15 @@ describe('ToolTraceRelay diff image integration (deltas §39)', () => {
     expect(g.sent.length).toBe(1)
     const payload = g.sent[0]!.payload as { embeds: unknown[]; files?: unknown[] }
     expect(payload.files?.length).toBe(1)
-    // embed.image.url should reference the attachment by basename
-    const embedJson = (payload.embeds[0] as { toJSON: () => Record<string, unknown> }).toJSON()
-    expect(embedJson.image).toBeDefined()
-    expect((embedJson.image as { url: string }).url).toContain('attachment://fake-diff.png')
+    // §43: Edit renders meta + Diff body; the PNG attaches to the Diff embed
+    // (the one with imageAttachment set, indexed 1 for Edit). All Edit/
+    // MultiEdit/Write attachments use the fixed `diff.png` name (DIFF_IMAGE_NAME).
+    const diffEmbedJson = (payload.embeds[1] as { toJSON: () => Record<string, unknown> }).toJSON()
+    expect(diffEmbedJson.image).toBeDefined()
+    expect((diffEmbedJson.image as { url: string }).url).toBe('attachment://diff.png')
+    // Meta embed (embeds[0]) should NOT have an image set.
+    const metaJson = (payload.embeds[0] as { toJSON: () => Record<string, unknown> }).toJSON()
+    expect(metaJson.image).toBeUndefined()
   })
 
   it('Bash trace → renderer returns null; no files, no image', async () => {
