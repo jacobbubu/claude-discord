@@ -21,7 +21,7 @@ import type { Connection } from './connection.ts'
 import { renderDiffImage as defaultRenderDiffImage } from './diff-image-renderer.ts'
 import type { DiscordGateway } from './discord-gateway.ts'
 import type { WorkspaceRegistry } from './registry.ts'
-import { renderTraceContent, toolIcon } from './trace-formatter.ts'
+import { DIFF_IMAGE_NAME, renderTrace } from './trace-formatter.ts'
 
 const EMBED_DESC_MAX = 4000 // Discord embed.description hard limit is 4096
 const THREAD_AUTO_ARCHIVE_MIN = 60
@@ -143,35 +143,52 @@ export class ToolTraceRelay {
         log.warn(`cc_tool_trace: thread ${threadId} unfetchable or not text-based`)
         return
       }
-      // §40-fix: per-tool icon makes it easier to scan a thread full of
-      // traces; error status still wins (red ❌ supersedes the tool icon).
-      const icon = msg.status === 'error' ? '❌' : toolIcon(msg.tool_name)
-      // §40: per-tool text renderer — Bash splits command / stdout / stderr,
-      // Read/Grep/Glob/etc. have their own layouts, unknown tools fall back to
-      // YAML. fields surface short structured metadata (status / file / etc.)
-      // outside description so the long content has more room.
-      const content = renderTraceContent(msg)
-      const embed = new EmbedBuilder()
-        .setTitle(`${icon} ${msg.tool_name}`)
-        .setDescription(content.description)
-        .setColor(msg.status === 'error' ? 0xed4245 : 0x5865f2)
-        // §40-fix: native timestamp renders as relative time on hover instead
-        // of a static ISO string in the footer.
-        .setTimestamp(new Date())
-      if (content.fields && content.fields.length > 0) {
-        embed.addFields(content.fields)
+      // §43: per-tool renderer returns multi-embed spec (meta + content
+      // sections); error status overrides the tool icon on the meta embed.
+      const render = renderTrace(msg)
+      const errorIcon = msg.status === 'error' ? '❌ ' : ''
+      const builtEmbeds: EmbedBuilder[] = render.embeds.map((spec, i) => {
+        const eb = new EmbedBuilder()
+        if (spec.title != null) {
+          // On the first (meta) embed, replace the leading tool icon with ❌
+          // when the trace failed — keeps the error signal prominent.
+          const title =
+            i === 0 && errorIcon
+              ? spec.title.replace(/^[^\s]+\s/, errorIcon)
+              : spec.title
+          eb.setTitle(title)
+        }
+        if (spec.description != null) eb.setDescription(spec.description)
+        if (spec.color != null) eb.setColor(spec.color)
+        if (spec.fields && spec.fields.length > 0) eb.addFields(spec.fields)
+        return eb
+      })
+      // Native timestamp lives on the LAST embed so it visually anchors the
+      // group's bottom edge.
+      if (builtEmbeds.length > 0) {
+        builtEmbeds[builtEmbeds.length - 1]!.setTimestamp(new Date())
       }
 
       // §39: try diff image render for Edit/MultiEdit/Write. Always keep text
-      // description for searchability + copy-paste fallback. Renderer returns
-      // null when tool isn't diff-shaped or silicon spawn fails — degrades to
-      // text-only.
+      // body for searchability + copy-paste fallback. Renderer returns null
+      // when tool isn't diff-shaped or silicon spawn fails — degrades to text.
       const imagePath = await this.renderDiff(msg).catch(() => null)
-      const sendPayload: { embeds: unknown[]; files?: unknown[] } = { embeds: [embed] }
+      const sendPayload: { embeds: unknown[]; files?: unknown[] } = {
+        embeds: builtEmbeds,
+      }
       if (imagePath) {
-        const name = basename(imagePath)
-        embed.setImage(`attachment://${name}`)
-        sendPayload.files = [new AttachmentBuilder(imagePath, { name })]
+        // Find the embed spec that wants the diff image; attach + set image.
+        const idx = render.embeds.findIndex(s => s.imageAttachment === DIFF_IMAGE_NAME)
+        if (idx >= 0) {
+          builtEmbeds[idx]!.setImage(`attachment://${DIFF_IMAGE_NAME}`)
+          sendPayload.files = [new AttachmentBuilder(imagePath, { name: DIFF_IMAGE_NAME })]
+        } else {
+          // No body embed wanted it (shouldn't happen for diff tools); attach
+          // to last embed as a safety net.
+          const fallbackName = basename(imagePath)
+          builtEmbeds[builtEmbeds.length - 1]!.setImage(`attachment://${fallbackName}`)
+          sendPayload.files = [new AttachmentBuilder(imagePath, { name: fallbackName })]
+        }
       }
 
       await (thread as unknown as { send: (o: { embeds: unknown[]; files?: unknown[] }) => Promise<unknown> }).send(
@@ -187,6 +204,7 @@ export class ToolTraceRelay {
       log.warn(`cc_tool_trace: post embed to ${threadId} failed: ${e}`)
     }
   }
+
 
   /**
    * Architecture deltas §37: Stop hook calls this on turn end to push the

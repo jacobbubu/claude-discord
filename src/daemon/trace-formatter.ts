@@ -1,13 +1,23 @@
 /**
- * Architecture deltas §40: per-tool text renderer for the trace embed.
+ * Architecture deltas §40 / §43: per-tool text renderer for the trace embed.
  *
- * Replaces the old JSON-dump-everything approach with tool-specific formatting:
- * Bash extracts command + stdout + stderr + exit; Read shows file content;
- * Grep/Glob show pattern + hits; etc. Anything unknown falls back to a small
- * YAML-ish pretty-printer (way more readable than single-line JSON).
+ * §43: returns multi-embed (`TraceRender = { embeds: TraceEmbedSpec[] }`) so
+ * a single trace can pack meta + input + output (and stderr when present)
+ * into a stack of related embeds within one Discord message. The combined
+ * 6000-char total cap across embeds gives long Bash/Read traces more room
+ * than the single-embed 4096-char description allowed.
  *
- * Pure module — no side effects, no I/O. Consumer (`tool-trace.ts`) builds
- * the EmbedBuilder from the returned `description` + `fields`.
+ * Per-tool layouts:
+ *   - Bash: meta (Status/Intent/Interrupted fields) + Command + stdout + stderr?
+ *   - Read: meta (File/Range fields) + Content
+ *   - Grep/Glob: meta (Pattern/Path fields) + Hits
+ *   - WebFetch/WebSearch: meta (URL/Query) + Body
+ *   - Edit/MultiEdit/Write: meta (File field) + YAML body (silicon PNG via §39
+ *     attaches to this body embed via `imageAttachment`)
+ *   - Generic / unknown: meta (tool name) + Input (YAML) + Output (YAML)
+ *
+ * Pure module — no side effects, no I/O. Consumer (`tool-trace.ts`) converts
+ * each TraceEmbedSpec to an EmbedBuilder + applies any image attachment.
  */
 
 import type { CcToolTraceMsg } from '../protocol/schema.ts'
@@ -16,13 +26,34 @@ const EMBED_DESC_MAX = 4000 // Discord embed.description hard cap is 4096
 const FIELD_VALUE_MAX = 1024 // Discord embed.field.value hard cap
 const INTENT_MAX = 200
 
+const COLOR_OK = 0x5865f2 // Discord blurple
+const COLOR_ERROR = 0xed4245 // Discord red
+
 export type EmbedField = { name: string; value: string; inline?: boolean }
-export type TraceContent = { description: string; fields?: EmbedField[] }
+
+/**
+ * §43: a single embed in a multi-embed trace render. tool-trace.ts converts
+ * this to a real EmbedBuilder + attaches any referenced files.
+ */
+export type TraceEmbedSpec = {
+  title?: string
+  description?: string
+  color?: number
+  fields?: EmbedField[]
+  /**
+   * If set, consumer will attach a file with this name via §39
+   * AttachmentBuilder and set `embed.image = attachment://<name>`. Used by
+   * Edit/MultiEdit/Write to inline the silicon diff PNG.
+   */
+  imageAttachment?: string
+}
+
+export type TraceRender = { embeds: TraceEmbedSpec[] }
 
 /**
  * Per-tool emoji icon for the embed title. Falls back to the generic wrench
- * for unknown tools so the title still reads cleanly. Error status overrides
- * this in tool-trace.ts (renders ❌ instead).
+ * for unknown tools. Error status overrides this in tool-trace.ts (renders
+ * ❌ instead).
  */
 export function toolIcon(toolName: string): string {
   switch (toolName) {
@@ -49,56 +80,51 @@ export function toolIcon(toolName: string): string {
 }
 
 /**
- * Main entry. Routes to a per-tool renderer; falls back to YAML dump for
- * unknown tools or when input parse fails.
+ * §43 main entry. Returns a multi-embed spec; tool-trace.ts builds real
+ * EmbedBuilders + sends in one message.
  */
-export function renderTraceContent(msg: CcToolTraceMsg): TraceContent {
+export function renderTrace(msg: CcToolTraceMsg): TraceRender {
   const input = safeParseJson(msg.tool_input)
+  const color = msg.status === 'error' ? COLOR_ERROR : COLOR_OK
   switch (msg.tool_name) {
     case 'Bash':
-      return renderBash(input, msg.tool_response, msg.status)
+      return renderBash(input, msg.tool_response, msg.status, color)
     case 'Read':
-      return renderRead(input, msg.tool_response)
+      return renderRead(input, msg.tool_response, color)
     case 'Grep':
-      return renderGrep(input, msg.tool_response)
+      return renderGrep(input, msg.tool_response, color)
     case 'Glob':
-      return renderGlob(input, msg.tool_response)
+      return renderGlob(input, msg.tool_response, color)
     case 'WebFetch':
-      return renderWebFetch(input, msg.tool_response)
+      return renderWebFetch(input, msg.tool_response, color)
     case 'WebSearch':
-      return renderWebSearch(input, msg.tool_response)
+      return renderWebSearch(input, msg.tool_response, color)
     case 'Edit':
     case 'MultiEdit':
     case 'Write':
-      return renderFileWrite(msg.tool_name, input, msg.tool_response)
+      return renderFileWrite(msg.tool_name, input, color)
     default:
-      return renderGeneric(msg.tool_input, msg.tool_response)
+      return renderGeneric(msg.tool_name, msg.tool_input, msg.tool_response, color)
   }
 }
 
 // ─── per-tool renderers ──────────────────────────────────────────────────────
 
-function renderBash(input: unknown, response: string, status: 'ok' | 'error'): TraceContent {
+function renderBash(
+  input: unknown,
+  response: string,
+  status: 'ok' | 'error',
+  color: number,
+): TraceRender {
   const cmd = pickString(input, 'command')
   const intent = pickString(input, 'description')
   const parsed = safeParseJson(response)
-  // Bash's hook payload shape: `{stdout, stderr, interrupted, isImage,
-  // noOutputExpected}`. There is NO `exitCode` field (CC doesn't pipe the
-  // shell exit through to PostToolUse), so we can't surface a true exit
-  // code — fall back to the higher-level `status` (already derived from
-  // `is_error` by detectStatus).
-  // Envelope fallback for safety: if the shape is different (e.g. Anthropic
-  // API tool_result `{content:[{type,text}]}`), use the generic content
-  // extractor so we don't dump raw JSON in the embed.
+  // CC hook payload: { stdout, stderr, interrupted, isImage, noOutputExpected }.
+  // No exitCode (per #112). Envelope fallback if shape is unexpected.
   const stdoutTop = pickString(parsed, 'stdout')
   const stderr = pickString(parsed, 'stderr')
   const interrupted = pickBoolean(parsed, 'interrupted')
   const stdout = stdoutTop ?? extractToolText(response)
-
-  const sections: string[] = []
-  if (cmd) sections.push(`**Command**\n${fence('bash', cmd)}`)
-  if (stdout && stdout.length > 0) sections.push(`**stdout**\n${fence('text', stdout)}`)
-  if (stderr && stderr.length > 0) sections.push(`**stderr**\n${fence('text', stderr)}`)
 
   const fields: EmbedField[] = []
   fields.push({ name: 'Status', value: status === 'error' ? '❌ error' : '✅ ok', inline: true })
@@ -107,10 +133,34 @@ function renderBash(input: unknown, response: string, status: 'ok' | 'error'): T
   }
   if (intent) fields.push({ name: 'Intent', value: trim(intent, INTENT_MAX), inline: true })
 
-  return { description: clampDescription(sections.join('\n')), fields }
+  const embeds: TraceEmbedSpec[] = [
+    { title: `${toolIcon('Bash')} Bash`, color, fields },
+  ]
+  if (cmd) {
+    embeds.push({
+      title: 'Command',
+      description: clampDescription(fence('bash', cmd)),
+      color,
+    })
+  }
+  if (stdout && stdout.length > 0) {
+    embeds.push({
+      title: 'stdout',
+      description: clampDescription(fence('text', stdout)),
+      color,
+    })
+  }
+  if (stderr && stderr.length > 0) {
+    embeds.push({
+      title: 'stderr',
+      description: clampDescription(fence('text', stderr)),
+      color: COLOR_ERROR,
+    })
+  }
+  return { embeds }
 }
 
-function renderRead(input: unknown, response: string): TraceContent {
+function renderRead(input: unknown, response: string, color: number): TraceRender {
   const filePath = pickString(input, 'file_path')
   const offset = pickNumber(input, 'offset')
   const limit = pickNumber(input, 'limit')
@@ -121,8 +171,145 @@ function renderRead(input: unknown, response: string): TraceContent {
     const end = limit != null ? start + limit - 1 : '?'
     fields.push({ name: 'Range', value: `${start}–${end}`, inline: true })
   }
-  return { description: clampDescription(fence('text', extractToolText(response))), fields }
+  return {
+    embeds: [
+      { title: `${toolIcon('Read')} Read`, color, fields },
+      {
+        title: 'Content',
+        description: clampDescription(fence('text', extractToolText(response))),
+        color,
+      },
+    ],
+  }
 }
+
+function renderGrep(input: unknown, response: string, color: number): TraceRender {
+  const pattern = pickString(input, 'pattern')
+  const path = pickString(input, 'path')
+  const fields: EmbedField[] = []
+  if (pattern) fields.push({ name: 'Pattern', value: `\`${pattern}\``, inline: true })
+  if (path) fields.push({ name: 'Path', value: `\`${path}\``, inline: true })
+  return {
+    embeds: [
+      { title: `${toolIcon('Grep')} Grep`, color, fields },
+      {
+        title: 'Hits',
+        description: clampDescription(fence('text', extractToolText(response))),
+        color,
+      },
+    ],
+  }
+}
+
+function renderGlob(input: unknown, response: string, color: number): TraceRender {
+  const pattern = pickString(input, 'pattern')
+  const path = pickString(input, 'path')
+  const fields: EmbedField[] = []
+  if (pattern) fields.push({ name: 'Pattern', value: `\`${pattern}\``, inline: true })
+  if (path) fields.push({ name: 'Path', value: `\`${path}\``, inline: true })
+  return {
+    embeds: [
+      { title: `${toolIcon('Glob')} Glob`, color, fields },
+      {
+        title: 'Matches',
+        description: clampDescription(fence('text', extractToolText(response))),
+        color,
+      },
+    ],
+  }
+}
+
+function renderWebFetch(input: unknown, response: string, color: number): TraceRender {
+  const url = pickString(input, 'url')
+  const fields: EmbedField[] = []
+  if (url) fields.push({ name: 'URL', value: url, inline: false })
+  return {
+    embeds: [
+      { title: `${toolIcon('WebFetch')} WebFetch`, color, fields },
+      {
+        title: 'Body',
+        description: clampDescription(fence('text', extractToolText(response))),
+        color,
+      },
+    ],
+  }
+}
+
+function renderWebSearch(input: unknown, response: string, color: number): TraceRender {
+  const query = pickString(input, 'query')
+  const fields: EmbedField[] = []
+  if (query) fields.push({ name: 'Query', value: `\`${query}\``, inline: true })
+  return {
+    embeds: [
+      { title: `${toolIcon('WebSearch')} WebSearch`, color, fields },
+      {
+        title: 'Results',
+        description: clampDescription(fence('text', extractToolText(response))),
+        color,
+      },
+    ],
+  }
+}
+
+function renderFileWrite(
+  tool: 'Edit' | 'MultiEdit' | 'Write',
+  input: unknown,
+  color: number,
+): TraceRender {
+  const filePath = pickString(input, 'file_path')
+  const fields: EmbedField[] = []
+  if (filePath) fields.push({ name: 'File', value: `\`${filePath}\``, inline: true })
+  // Text fallback for §39 diff image: YAML dump of input keeps before/after
+  // searchable even when silicon isn't installed / fails. The image (when
+  // available) attaches via `imageAttachment` (consumer adds the file +
+  // sets embed.image = attachment://<name>).
+  return {
+    embeds: [
+      { title: `${toolIcon(tool)} ${tool}`, color, fields },
+      {
+        title: 'Diff',
+        description: clampDescription(fence('yaml', jsonToYaml(input))),
+        color,
+        imageAttachment: DIFF_IMAGE_NAME,
+      },
+    ],
+  }
+}
+
+function renderGeneric(
+  toolName: string,
+  toolInput: string,
+  toolResponse: string,
+  color: number,
+): TraceRender {
+  const inputYaml = jsonToYaml(safeParseJson(toolInput) ?? toolInput)
+  const responseYaml = jsonToYaml(safeParseJson(toolResponse) ?? toolResponse)
+  return {
+    embeds: [
+      { title: `${toolIcon(toolName)} ${toolName}`, color },
+      {
+        title: 'Input',
+        description: clampDescription(fence('yaml', inputYaml)),
+        color,
+      },
+      {
+        title: 'Output',
+        description: clampDescription(fence('yaml', responseYaml)),
+        color,
+      },
+    ],
+  }
+}
+
+/**
+ * §43: well-known attachment filename used by Edit/MultiEdit/Write renderers
+ * to reference the silicon-rendered diff PNG. tool-trace.ts uses this same
+ * constant when constructing the AttachmentBuilder so the `attachment://`
+ * URL in the embed matches.
+ */
+export const DIFF_IMAGE_NAME = 'diff.png'
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
 
 /**
  * Unwrap CC's structured tool-response shapes so the trace embed shows the
@@ -132,17 +319,14 @@ function renderRead(input: unknown, response: string): TraceContent {
  *   - `{ type: 'text', file: { filePath, content } }`           (Read object)
  *   - `{ type: 'text', file: [{ filePath, content }] }`         (Read array)
  *   - `{ content: '...' }`                                      (generic)
- * Anything else falls back to the raw response string (covers plain-string
- * outputs from simpler tools).
- *
- * Pure for unit-testability.
+ *   - `{ content: [{ type, text }] }`                           (Anthropic shape)
+ * Falls back to raw string for plain / unknown shapes.
  */
 export function extractToolText(response: string): string {
   const parsed = safeParseJson(response)
   if (parsed == null || typeof parsed !== 'object') return response
   const obj = parsed as Record<string, unknown>
 
-  // Read's file-content wrappers (both array and object shape).
   const file = obj.file
   if (Array.isArray(file) && file.length > 0) {
     const inner = file[0]
@@ -155,11 +339,8 @@ export function extractToolText(response: string): string {
     if (typeof c === 'string') return c
   }
 
-  // Standard `{type:'text', text:'...'}` envelope (Grep/Glob/Web* likely).
   if (typeof obj.text === 'string') return obj.text
-  // Generic `{content:'...'}` envelope (string).
   if (typeof obj.content === 'string') return obj.content
-  // Anthropic API tool_result shape: `{content: [{type:'text', text:'...'}, ...]}`.
   if (Array.isArray(obj.content) && obj.content.length > 0) {
     const first = obj.content[0]
     if (first && typeof first === 'object') {
@@ -167,67 +348,11 @@ export function extractToolText(response: string): string {
       if (typeof t === 'string') return t
     }
   }
-
   return response
 }
 
 /** §40-fix: kept for callers that imported the old narrow name. */
 export const extractReadContent = extractToolText
-
-function renderGrep(input: unknown, response: string): TraceContent {
-  const pattern = pickString(input, 'pattern')
-  const path = pickString(input, 'path')
-  const fields: EmbedField[] = []
-  if (pattern) fields.push({ name: 'Pattern', value: `\`${pattern}\``, inline: true })
-  if (path) fields.push({ name: 'Path', value: `\`${path}\``, inline: true })
-  return { description: clampDescription(fence('text', extractToolText(response))), fields }
-}
-
-function renderGlob(input: unknown, response: string): TraceContent {
-  const pattern = pickString(input, 'pattern')
-  const path = pickString(input, 'path')
-  const fields: EmbedField[] = []
-  if (pattern) fields.push({ name: 'Pattern', value: `\`${pattern}\``, inline: true })
-  if (path) fields.push({ name: 'Path', value: `\`${path}\``, inline: true })
-  return { description: clampDescription(fence('text', extractToolText(response))), fields }
-}
-
-function renderWebFetch(input: unknown, response: string): TraceContent {
-  const url = pickString(input, 'url')
-  const fields: EmbedField[] = []
-  if (url) fields.push({ name: 'URL', value: url, inline: false })
-  return { description: clampDescription(fence('text', extractToolText(response))), fields }
-}
-
-function renderWebSearch(input: unknown, response: string): TraceContent {
-  const query = pickString(input, 'query')
-  const fields: EmbedField[] = []
-  if (query) fields.push({ name: 'Query', value: `\`${query}\``, inline: true })
-  return { description: clampDescription(fence('text', extractToolText(response))), fields }
-}
-
-function renderFileWrite(
-  tool: 'Edit' | 'MultiEdit' | 'Write',
-  input: unknown,
-  response: string,
-): TraceContent {
-  const filePath = pickString(input, 'file_path')
-  const fields: EmbedField[] = []
-  if (filePath) fields.push({ name: 'File', value: `\`${filePath}\``, inline: true })
-  // Text fallback for §39 diff image. Keep YAML-ish dump of input so the
-  // before/after is searchable even when silicon is unavailable.
-  const body = `**${tool}**\n${fence('yaml', jsonToYaml(input))}`
-  return { description: clampDescription(body), fields }
-}
-
-function renderGeneric(toolInput: string, toolResponse: string): TraceContent {
-  const inputYaml = jsonToYaml(safeParseJson(toolInput) ?? toolInput)
-  const responseYaml = jsonToYaml(safeParseJson(toolResponse) ?? toolResponse)
-  const body = `**Input**\n${fence('yaml', inputYaml)}\n**Output**\n${fence('yaml', responseYaml)}`
-  return { description: clampDescription(body) }
-}
-
-// ─── helpers ─────────────────────────────────────────────────────────────────
 
 function safeParseJson(s: string): unknown {
   try {
@@ -277,15 +402,7 @@ export function clampDescription(s: string, max = EMBED_DESC_MAX): string {
 
 /**
  * Minimal "YAML-ish" pretty printer. Not strict YAML spec — goal is "more
- * readable than JSON.stringify". Pure for testing. Empty / null returns ''.
- *
- * Rules:
- *  - strings with newlines → `|-` block scalar, body indented
- *  - other strings → bare unless they need quoting (look like numbers / yaml
- *    reserved words / contain special chars)
- *  - objects → `key: value` lines, recursive with indentation
- *  - arrays → `- item` lines (item may be a sub-object, recursive)
- *  - numbers / booleans / null → bare
+ * readable than JSON.stringify". Pure for testing.
  */
 export function jsonToYaml(value: unknown, indent = 0): string {
   if (value == null) return 'null'
@@ -296,9 +413,6 @@ export function jsonToYaml(value: unknown, indent = 0): string {
     const pad = ' '.repeat(indent)
     return value
       .map(item => {
-        // Render the item at indent=0 so we can prefix its first line with
-        // `- ` directly. Subsequent lines (multi-line object / nested) need
-        // `  ` (2-space hanging indent) so they line up under the first key.
         const rendered = jsonToYaml(item, 0)
         const lines = rendered.split('\n')
         return lines
@@ -332,7 +446,6 @@ function formatScalarString(s: string, indent: number): string {
     const body = s.split('\n').map(line => `${pad}${line}`).join('\n')
     return `|-\n${body}`
   }
-  // Quote if it looks like a number / bool / null / starts with special
   if (/^(true|false|null|yes|no|on|off|-?\d+(\.\d+)?)$/i.test(s)) return `"${s}"`
   if (/^[\s\-:?,&*!|>%@`#"']/.test(s) || s.includes(': ')) return JSON.stringify(s)
   return s
