@@ -42,10 +42,15 @@ You should now have the `claude-discord-bot` command available.
      (required, otherwise message bodies arrive empty)
    - **Token** → **Reset Token** → copy it (only shown once)
 3. Sidebar → **OAuth2 → URL Generator**:
-   - Scope: ✅ `bot`
-   - Permissions: ✅ View Channels · Send Messages · Send Messages in
-     Threads · Read Message History · Attach Files · Add Reactions ·
-     Manage Channels
+   - Scopes: ✅ `bot` ✅ `applications.commands`
+     (the second one lets the bot register slash commands like `/use`)
+   - Bot Permissions: ✅ View Channels · Send Messages · **Embed Links**
+     · **Create Public Threads** · Send Messages in Threads · Read
+     Message History · Attach Files · Add Reactions · Manage Channels
+     - Embed Links is required — without it Discord strips every trace
+       embed
+     - Create Public Threads is required for per-turn trace threads
+     - Manage Channels lets `/use` rewrite the channel topic
    - Open the generated URL → invite the bot to a test server (DMs only
      work once you and the bot share at least one server).
 
