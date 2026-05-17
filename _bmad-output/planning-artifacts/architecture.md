@@ -2291,3 +2291,46 @@ bump 0.0.43 → 0.0.44。
 - content embeds author 仍 undefined
 
 bump 0.0.44 → 0.0.45。
+
+### 47. npm 发布 + semantic-release + GitHub Actions 自动化
+
+**背景。** 用户安装路径仍是 git clone + bun install + `bun run src/cli/index.ts ...`。配 npm 发布让 `bun install -g claude-discord-bot` 一行装好。同时 manual version bump 跟 CHANGELOG 维护已经掉队（半年前 `--version` 还 hardcoded 0.0.1，实际是 0.0.40+），上 semantic-release 一并解。
+
+**改动。**
+
+- `package.json`：
+  - `private: false`
+  - 补 `author / homepage / repository / bugs / keywords / publishConfig`
+  - `files: ["src", ".claude-plugin", "CONTRIBUTING.md"]` 白名单
+  - devDeps 加 `semantic-release` + plugins (`changelog / exec / git`)
+- `.npmignore`：排除 `__tests__/ / *.test.ts / spikes / _bmad / docs/`
+- `.releaserc.json`：semantic-release config，branches=['main']，plugins commit-analyzer / release-notes-generator / changelog / exec / npm / git / github
+- `scripts/sync-plugin-version.mjs`：semantic-release `prepareCmd` 调用，把 `.claude-plugin/plugin.json.version` 写成 `${nextRelease.version}`，保证 npm + marketplace 版本一致
+- `.github/workflows/release.yml`：push to main + workflow_dispatch；oven-sh/setup-bun → `bun install --frozen-lockfile` → `bun run check` → `npx semantic-release`
+- README 顶上加 npm badge
+- CONTRIBUTING.md 加 Releases 段（流程 / 触发方式 / secrets / 选 semantic-release 的理由）
+
+**版本锚定。**
+
+semantic-release 默认从最近的 `v*` git tag 起算 commits。我们仓库没有任何 release tag —— 第一次跑会从全部 commits 推断，由于历史里有大量 `feat:` commits 会跳到 `1.0.0`。
+
+合 PR 后**手动** `git tag v0.0.47 && git push --tags` 锚住当前状态，下次 merge 一个 `feat:` 会自然出 `v0.1.0`，不会跳到 1.0.0。
+
+**用户操作。**
+
+- 在 npmjs.com → Avatar → Access Tokens → Generate "Automation" token
+- GitHub repo Settings → Secrets and variables → Actions → Add `NPM_TOKEN`
+- 一次性
+
+**测试。**
+
+- typecheck + 现有 517 tests 全过
+- 本地 `npx semantic-release --dry-run --no-ci`：plugins 全加载 OK，正确识别 "not main branch, skipping release"
+- workflow yaml 静态语法 OK（GH 会在第一次 push 验证）
+
+**后续。**
+
+- 实际触发首次 publish：合 PR + 打 v0.0.47 tag + 让下一个 feat PR 触发自动 release，验证整链路
+- 如果觉得 dist 构建有价值（Node-only 用户），后续可加 `bun build` 阶段 + `bin` 指向 dist。当前 macOS+Bun 限制下源码直发够用
+
+bump 0.0.46 → 0.0.47（实际下次 release 由 semantic-release 决定）。

@@ -1,0 +1,13 @@
+__tests__/
+*.test.ts
+spikes/
+_bmad/
+_bmad-output/
+docs/
+.github/
+.claude/
+.claude-plugin/.gitignore
+LIVE_TEST.md
+vitest.config.ts
+tsconfig.json
+.releaserc.json
