@@ -21,8 +21,12 @@ bot, route by channel binding, and survive process restarts.
 
 ## Quick start (≈ 10 min)
 
-> Requires **macOS or Linux**, **Bun 1.x** (install:
+> Requires **macOS**, **Bun 1.x** (install:
 > `curl -fsSL https://bun.sh/install | bash`), and a Discord account.
+>
+> Linux may work — daemon side compiles + has systemd template — but channel
+> mode (step 4) needs an OS-managed `managed-settings.json` whose Linux path
+> isn't verified yet. Open an issue if you want help getting it running.
 
 ### 1. Install
 
@@ -63,10 +67,28 @@ claude-discord-bot start          # foreground; ^C to stop
 
 Look for `discord gateway connected as <bot>#<id>` in the logs.
 
-(For production: `claude-discord-bot install` registers it as a launchd /
-systemd user service.)
+(For production: `claude-discord-bot install` registers it as a launchd
+user service.)
 
-### 4. Enable channel mode in Claude Code
+### 4. Install the CC hooks (recommended)
+
+The base setup above is enough to **send / receive** Discord messages, but
+for the full unattended experience — Discord-routed permission prompts,
+auto trace threads under each turn, precise `/cancel` — install the hooks:
+
+```bash
+claude-discord-bot install-hook
+```
+
+This writes three entries (`PreToolUse` / `PostToolUse` / `Stop`) into
+your `~/.claude/settings.json`. Reverse with `claude-discord-bot uninstall-hook`.
+
+Skip this if you'll mostly drive CC manually from the terminal and just
+use Discord for occasional notifications — see the
+[hooks reference table](#hooks-table) below for what each one specifically
+adds.
+
+### 5. Enable channel mode in Claude Code
 
 This is what makes Discord messages **automatically** drive CC (without it,
 you'd have to manually tell CC to call the `reply` tool every time).
@@ -97,7 +119,7 @@ You should see `Listening for channel messages from: plugin:claude-discord@jacob
 and no allowlist error. Repeat the `claude --channels ...` step in any
 project you want addressable from Discord.
 
-### 5. Pair your Discord account
+### 6. Pair your Discord account
 
 ```bash
 # In Discord, DM your bot anything → you'll get a 6-hex pairing code
@@ -107,7 +129,7 @@ claude-discord-bot pair <6-hex-code>
 
 You're paired. The bot now accepts your DMs.
 
-### 6. Use it
+### 7. Use it
 
 In Discord:
 
@@ -165,12 +187,14 @@ Architecture deep dive:
 | Watch logs | `claude-discord-bot logs -f` |
 | Reset state | `claude-discord-bot reset --all` (see `--routing` `--inbox` `--pending` for scoped resets) |
 
-### Optional: install the PreToolUse / PostToolUse / Stop hooks
+### What each hook does (reference)
 
-The base setup above is enough to send / receive Discord messages. The
-hooks add three quality-of-life features for unattended / mobile usage:
+The Quick Start step 4 installs all three. Skip any and the affected
+feature degrades but the rest still works.
 
-| Hook | Adds | Skip it →lose |
+<a id="hooks-table"></a>
+
+| Hook | Adds | Skip it → lose |
 | --- | --- | --- |
 | **PreToolUse** | Per-tool permission prompts routed to Discord buttons | CC's TUI prompts each tool — no good for unattended |
 | **PostToolUse** | Tool I/O auto-collected into per-turn Discord trace threads | No trace visibility in Discord |
@@ -181,7 +205,7 @@ claude-discord-bot install-hook       # writes ~/.claude/settings.json entries
 claude-discord-bot uninstall-hook     # reverse, idempotent
 ```
 
-Optional dependency for **prettier diff visualization** in trace threads:
+### Optional: silicon for prettier diff PNGs in trace threads
 
 ```bash
 brew install silicon       # macOS — Edit/Write trace gets syntax-highlighted PNG
