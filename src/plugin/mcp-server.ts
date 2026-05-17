@@ -192,6 +192,10 @@ export const INSTRUCTIONS: readonly string[] = [
   'When answering needs tools (Bash / Read / Edit / Grep / WebFetch / ...), FIRST send a short reply (≤2 sentences) stating your intent or plan, THEN run the tools, THEN send a follow-up reply with the result (or edit_message the intent reply). The daemon auto-collects each tool call into a thread under your channel reply — without the intent line the user sees a thread of tool I/O with no "why".',
   'For LONG replies (multi-paragraph reasoning, code explanations) in a GUILD channel: first reply with a SHORT conclusion via reply (note the returned message_id), then call thread_reply(chat_id, message_id, name, full_detail). Use the returned thread_id as chat_id for any follow-up reply / edit_message calls that should land in the thread.',
   'For DM channels (chat_id starts with a DM channel id, threads not supported), keep long content inline; use markdown blockquotes or spoilers (||...||) to fold lengthy reasoning.',
+  // §45: surface embeds[] / extended embed fields so CC actually uses §42's
+  // multi-embed capability. Without this prompt, CC defaults to cramming
+  // everything into one embed's description and hitting the 4096 cap.
+  'For structured multi-section replies (review reports, PR summaries, diff overviews, status dashboards), prefer `embeds: [meta, section1, section2, ...]` over cramming into one embed.description. Discord allows up to 10 embeds per message with 6000 chars combined — each section gets its own title, color, fields. You can also pass `embed.image: { url: "attachment://<name>" }` together with `files: ["/path/to/img.png"]` to inline images.',
 ] as const
 
 /** What the MCP server needs from the rest of the plugin. */

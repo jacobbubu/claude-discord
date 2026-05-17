@@ -38,4 +38,14 @@ describe('mcp-server instructions', () => {
     expect(joined).toMatch(/DM channels/)
     expect(joined).toMatch(/(inline|markdown)/i)
   })
+
+  it('§45: surfaces embeds[] (multi-embed) capability for structured replies', () => {
+    expect(joined).toMatch(/embeds:\s*\[/)
+    expect(joined).toMatch(/up to 10 embeds/i)
+  })
+
+  it('§45: mentions attachment://<name> + files for inline images', () => {
+    expect(joined).toMatch(/attachment:\/\//)
+    expect(joined).toMatch(/files:/)
+  })
 })
