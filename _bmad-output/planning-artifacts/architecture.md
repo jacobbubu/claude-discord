@@ -2168,3 +2168,32 @@ description 仍受 `EMBED_DESC_MAX = 4000` 截断；切断点选 fence 边界优
 - `formatBody` backward-compat 保留
 
 bump 0.0.37 → 0.0.38。
+
+### 41. trace thread 复用检测 — inbound 从旧 trace thread 来时重定向到 parent channel
+
+**背景。** §24 每回合开一个 trace thread 收 tool I/O，§37 turn 结束自动归档。但用户经常在归档的 trace thread 内继续打字（Discord 自动 reopen），inbound 进 daemon 时 `chat_id = thread.id`，照常起新 turn，CC reply 回到这个 thread，§24 想为新回合开 trace sub-thread → Discord 不允许 thread 套 thread → 失败 → 新 trace 全砸进旧 trace thread，时间线乱。
+
+**改动。**
+
+- `ToolTraceRelay` 加内存集合 `createdThreadIds: Set<string>`；`openTraceThread` 成功创建后 `createdThreadIds.add(thread.id)`
+- 暴露 `isOurTraceThread(threadId): boolean` 给 inbound-router 调用
+- `InboundRouterDeps` 加可选 `isTraceThread: (threadId: string) => boolean`
+- `inbound-router handle()` 在 gate 之前计算 `effectiveChannelId`：
+  - `msg.channel.isThread() && msg.channel.parentId && deps.isTraceThread?.(msg.channelId)` → `effectiveChannelId = msg.channel.parentId`
+  - 否则 `effectiveChannelId = msg.channelId`
+- 所有 downstream 用 `effectiveChannelId`：routing.get / startTurn / typingHeartbeat.start / conn.send 的 `chat_id` / ringBuffer.push / 错误回复
+- `msg.react` 仍发到 thread（用户操作的实际位置）
+- daemon/index.ts 把 `isTraceThread: tid => traceRelay.isOurTraceThread(tid)` 注入 deps
+
+**取舍。**
+
+- 内存集合：daemon 重启丢失。重启后老 thread 上的复用仍回退到 pre-§41 行为，但新回合的 thread 不受影响。可接受
+- 只对**我们创建的 trace thread** 重定向；用户自己开的 Discussion thread（也 isThread() = true）不会被错误重定向
+- CC reply 会出现在 parent channel，不在原 thread 里 —— 是预期行为，让对话回到正确位置
+
+**测试。**
+
+- ToolTraceRelay：默认 `isOurTraceThread(any)` = false；成功 create → registered；不相关 id 仍 false
+- inbound-router integration：trace thread + isTraceThread = true → 路由到 parent；非 trace thread → 走 msg.channelId；plugin 收到 inbound 的 chat_id / conn.lastInboundChatId 都是 effectiveChannelId
+
+bump 0.0.41 → 0.0.42。

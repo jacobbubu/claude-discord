@@ -33,11 +33,30 @@ const THREAD_AUTO_ARCHIVE_MIN = 60
 export type DiffImageRenderer = (msg: CcToolTraceMsg) => Promise<string | null>
 
 export class ToolTraceRelay {
+  /**
+   * §41: set of thread IDs daemon created for trace embeds. inbound-router
+   * checks against this to redirect "user typed inside a trace thread"
+   * messages back to the parent channel — otherwise the new turn's trace
+   * gets jammed into the old thread (Discord forbids thread-in-thread).
+   * In-memory only; daemon restart drops the set (acceptable — only old
+   * threads are affected, fresh turns work fine).
+   */
+  private readonly createdThreadIds = new Set<string>()
+
   constructor(
     private readonly gateway: DiscordGateway,
     private readonly registry: WorkspaceRegistry,
     private readonly renderDiff: DiffImageRenderer = defaultRenderDiffImage,
   ) {}
+
+  /**
+   * §41: was the given Discord thread id created by us as a per-turn trace
+   * thread? Used by inbound-router to decide whether to redirect to the
+   * parent channel.
+   */
+  isOurTraceThread(threadId: string): boolean {
+    return this.createdThreadIds.has(threadId)
+  }
 
   async handle(msg: CcToolTraceMsg): Promise<void> {
     const conn = this.findConnection(msg.cwd)
@@ -107,6 +126,9 @@ export class ToolTraceRelay {
         name,
         autoArchiveDuration: THREAD_AUTO_ARCHIVE_MIN,
       })
+      // §41: register this thread id so inbound-router knows it's one of
+      // ours — if the user types inside it later, we redirect to parent.
+      this.createdThreadIds.add(thread.id)
       return thread.id
     } catch (e) {
       log.warn(`cc_tool_trace: open thread failed for ${parentChatId}: ${e}`)

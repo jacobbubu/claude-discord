@@ -183,6 +183,12 @@ export async function runDaemon(): Promise<void> {
         ? (senderId, text) => permissionRelay.handleTextResponse(senderId, text)
         : undefined,
       typingHeartbeat: typingHeartbeat ?? undefined,
+      // §41: lets the router redirect inbound from old daemon-created trace
+      // threads back to the parent channel so new turn traces don't get
+      // jammed into the old thread.
+      isTraceThread: traceRelay
+        ? threadId => traceRelay.isOurTraceThread(threadId)
+        : undefined,
     })
     gateway.client.on('messageCreate', msg => {
       if (msg.author.bot) return
