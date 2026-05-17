@@ -82,13 +82,17 @@ function renderBash(input: unknown, response: string, status: 'ok' | 'error'): T
   const cmd = pickString(input, 'command')
   const intent = pickString(input, 'description')
   const parsed = safeParseJson(response)
-  // Bash's structured shape carries stdout/stderr/exitCode as top-level keys.
-  // If the response is wrapped in a different envelope (e.g. Anthropic API
-  // tool_result `{content:[{type,text}]}`), fall back to the generic content
-  // extractor so we don't surface a raw JSON dump in the embed.
+  // Bash's hook payload shape: `{stdout, stderr, interrupted, isImage,
+  // noOutputExpected}`. There is NO `exitCode` field (CC doesn't pipe the
+  // shell exit through to PostToolUse), so we can't surface a true exit
+  // code — fall back to the higher-level `status` (already derived from
+  // `is_error` by detectStatus).
+  // Envelope fallback for safety: if the shape is different (e.g. Anthropic
+  // API tool_result `{content:[{type,text}]}`), use the generic content
+  // extractor so we don't dump raw JSON in the embed.
   const stdoutTop = pickString(parsed, 'stdout')
   const stderr = pickString(parsed, 'stderr')
-  const exitCode = pickNumber(parsed, 'exitCode')
+  const interrupted = pickBoolean(parsed, 'interrupted')
   const stdout = stdoutTop ?? extractToolText(response)
 
   const sections: string[] = []
@@ -98,7 +102,9 @@ function renderBash(input: unknown, response: string, status: 'ok' | 'error'): T
 
   const fields: EmbedField[] = []
   fields.push({ name: 'Status', value: status === 'error' ? '❌ error' : '✅ ok', inline: true })
-  if (exitCode != null) fields.push({ name: 'Exit', value: `\`${exitCode}\``, inline: true })
+  if (interrupted === true) {
+    fields.push({ name: 'Interrupted', value: '⏸ yes', inline: true })
+  }
   if (intent) fields.push({ name: 'Intent', value: trim(intent, INTENT_MAX), inline: true })
 
   return { description: clampDescription(sections.join('\n')), fields }
@@ -241,6 +247,12 @@ function pickNumber(o: unknown, key: string): number | null {
   if (typeof o !== 'object' || o === null) return null
   const v = (o as Record<string, unknown>)[key]
   return typeof v === 'number' ? v : null
+}
+
+function pickBoolean(o: unknown, key: string): boolean | null {
+  if (typeof o !== 'object' || o === null) return null
+  const v = (o as Record<string, unknown>)[key]
+  return typeof v === 'boolean' ? v : null
 }
 
 function fence(lang: string, body: string): string {
