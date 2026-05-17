@@ -2269,3 +2269,25 @@ bump 0.0.42 → 0.0.43。
 - tool-trace.test.ts §39 集成：PNG attaches to body embed (索引 1) 不再是 meta；meta embed 无 image
 
 bump 0.0.43 → 0.0.44。
+
+### 44. trace meta embed 加 author = workspace —— 让 trace 头部显示来源
+
+**背景。** §32 时用户反馈 trace embed 看不出来是哪个 workspace 的（只能从 thread 名间接看，移动端 thread 名滚出屏后无从判断）。§42 解锁 \`embed.author\` 字段后可以直接挂 workspace 名。
+
+**改动。**
+
+- \`tool-trace.ts handle()\` 把 \`conn.workspace\` 传给 \`postTraceEmbed\`
+- \`postTraceEmbed\` 签名加 \`workspace: string | null\` 参数；map 到 EmbedBuilder 时，第一个（meta）embed 且 workspace 非空 → \`eb.setAuthor({ name: workspace })\`
+- 仅 meta 设置；content embeds（Command / stdout / Diff / etc.）不重复
+
+**取舍。**
+
+- 只挂 \`name\`，不挂 \`iconURL\` / \`url\` —— 没合理头像源 / 跳转目标
+- 字符计入 §42 6000 cross-embed total —— workspace 名通常 < 30 字符，影响可忽略
+
+**测试 +2。**
+
+- meta embed author.name === workspace
+- content embeds author 仍 undefined
+
+bump 0.0.44 → 0.0.45。

@@ -513,3 +513,50 @@ describe('ToolTraceRelay diff image integration (deltas §39)', () => {
     expect(payload.files).toBeUndefined()
   })
 })
+
+describe('ToolTraceRelay meta embed author (deltas §44)', () => {
+  it('meta embed (embeds[0]) sets author.name to the workspace name', async () => {
+    const reg = new WorkspaceRegistry()
+    const conn = makeConn('/work', 'parent-1', 'foo')
+    conn.workspace = 'my-workspace'
+    reg.register('my-workspace', conn)
+    const g = makeGateway()
+    g.addParent('parent-1', ChannelType.GuildText)
+
+    const relay = new ToolTraceRelay(g.gateway, reg)
+    await relay.handle(makeTrace({ tool_name: 'Bash', cwd: '/work' }))
+
+    expect(g.sent.length).toBe(1)
+    const payload = g.sent[0]!.payload as { embeds: Array<{ toJSON: () => Record<string, unknown> }> }
+    const metaJson = payload.embeds[0]!.toJSON()
+    expect(metaJson.author).toBeDefined()
+    expect((metaJson.author as { name: string }).name).toBe('my-workspace')
+  })
+
+  it('non-meta embeds (Command / stdout / etc.) do NOT carry author', async () => {
+    const reg = new WorkspaceRegistry()
+    const conn = makeConn('/work', 'parent-1', 'foo')
+    conn.workspace = 'ws-a'
+    reg.register('ws-a', conn)
+    const g = makeGateway()
+    g.addParent('parent-1', ChannelType.GuildText)
+
+    const relay = new ToolTraceRelay(g.gateway, reg)
+    await relay.handle(
+      makeTrace({
+        tool_name: 'Bash',
+        tool_input: JSON.stringify({ command: 'echo hi' }),
+        tool_response: JSON.stringify({ stdout: 'hi', stderr: '' }),
+        cwd: '/work',
+      }),
+    )
+
+    const payload = g.sent[0]!.payload as { embeds: Array<{ toJSON: () => Record<string, unknown> }> }
+    // 3 embeds: meta, Command, stdout. Only the meta has author.
+    expect(payload.embeds.length).toBeGreaterThanOrEqual(2)
+    for (let i = 1; i < payload.embeds.length; i++) {
+      const j = payload.embeds[i]!.toJSON()
+      expect(j.author).toBeUndefined()
+    }
+  })
+})
