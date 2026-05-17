@@ -21,6 +21,7 @@ import type { Connection } from './connection.ts'
 import { renderDiffImage as defaultRenderDiffImage } from './diff-image-renderer.ts'
 import type { DiscordGateway } from './discord-gateway.ts'
 import type { WorkspaceRegistry } from './registry.ts'
+import { renderTraceContent } from './trace-formatter.ts'
 
 const EMBED_DESC_MAX = 4000 // Discord embed.description hard limit is 4096
 const THREAD_AUTO_ARCHIVE_MIN = 60
@@ -121,11 +122,19 @@ export class ToolTraceRelay {
         return
       }
       const icon = msg.status === 'error' ? '❌' : '🔧'
+      // §40: per-tool text renderer — Bash splits command / stdout / stderr,
+      // Read/Grep/Glob/etc. have their own layouts, unknown tools fall back to
+      // YAML. fields surface short structured metadata (status / file / etc.)
+      // outside description so the long content has more room.
+      const content = renderTraceContent(msg)
       const embed = new EmbedBuilder()
         .setTitle(`${icon} ${msg.tool_name}`)
-        .setDescription(formatBody(msg))
+        .setDescription(content.description)
         .setColor(msg.status === 'error' ? 0xed4245 : 0x5865f2)
         .setFooter({ text: new Date().toISOString() })
+      if (content.fields && content.fields.length > 0) {
+        embed.addFields(content.fields)
+      }
 
       // §39: try diff image render for Edit/MultiEdit/Write. Always keep text
       // description for searchability + copy-paste fallback. Renderer returns
