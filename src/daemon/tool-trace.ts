@@ -84,7 +84,7 @@ export class ToolTraceRelay {
       conn.activeTraceThreadId = threadId
     }
 
-    await this.postTraceEmbed(threadId, msg)
+    await this.postTraceEmbed(threadId, msg, conn.workspace)
   }
 
   private findConnection(cwd?: string): Connection | null {
@@ -136,7 +136,11 @@ export class ToolTraceRelay {
     }
   }
 
-  private async postTraceEmbed(threadId: string, msg: CcToolTraceMsg): Promise<void> {
+  private async postTraceEmbed(
+    threadId: string,
+    msg: CcToolTraceMsg,
+    workspace: string | null,
+  ): Promise<void> {
     try {
       const thread = await this.gateway.client.channels.fetch(threadId)
       if (!thread || !('send' in thread)) {
@@ -161,6 +165,12 @@ export class ToolTraceRelay {
         if (spec.description != null) eb.setDescription(spec.description)
         if (spec.color != null) eb.setColor(spec.color)
         if (spec.fields && spec.fields.length > 0) eb.addFields(spec.fields)
+        // §44: surface workspace name on the meta embed's author line so the
+        // user can tell at a glance which CC produced this trace (matters in
+        // mobile, where the thread title can scroll off-screen).
+        if (i === 0 && workspace) {
+          eb.setAuthor({ name: workspace })
+        }
         return eb
       })
       // Native timestamp lives on the LAST embed so it visually anchors the
