@@ -2126,3 +2126,45 @@ bump 0.0.35 → 0.0.36。
   - renderer null → embed 仍发，无 files
 
 bump 0.0.36 → 0.0.37。
+
+### 40. trace embed 文本端结构化 — per-tool renderer + YAML 兜底 + embed fields
+
+**背景。** §39 给 Edit/MultiEdit/Write 加了 diff PNG，但 trace embed 的**文本端**仍是 `JSON.stringify(tool_input/output)` 塞 description。Bash trace（53% 流量）最受影响 —— 用户截图过那条单行带转义巨 JSON 的 embed。原始痛点解了一半。
+
+**改动。**
+
+抽 `src/daemon/trace-formatter.ts`，导出 `renderTraceContent(msg): { description: string, fields?: EmbedField[] }`，分发到 per-tool renderer：
+
+- **Bash** → description 拆 `**Command**` ```bash 块 + `**stdout**` ```text 块（stderr 非空才显示）；fields 含 `Status / Exit / Intent`
+- **Read** → description 是 ```text 内容（CC 已经 `cat -n` 格式化好）；fields 含 `File / Range`
+- **Grep / Glob** → description 是 ```text 命中；fields 含 `Pattern / Path`
+- **WebFetch / WebSearch** → description 是 ```text 摘要；fields 含 `URL` 或 `Query`
+- **Edit / MultiEdit / Write** → description 仍是文本 diff（fallback，PNG 由 §39 走 image）；fields 含 `File`
+- **未知工具** → YAML 兜底
+
+**YAML 兜底（不引入新依赖）：**
+
+写 `jsonToYaml(value): string`，输出"读着像 YAML"但不严格符合 spec 的文本：
+- 多行字符串走 `|-` 块标量（避免 `\n` 字面量）
+- 对象走缩进 `key: value`
+- 数组走 `- item`
+- 标量直接写（需引号时只引必要场景）
+
+**实施单元。**
+
+- 新 `trace-formatter.ts`：`renderTraceContent` + 各 per-tool helper + `jsonToYaml` + `safeParse` 工具
+- `tool-trace.ts postTraceEmbed`：替换 `formatBody(msg)` 调用，spread fields 到 EmbedBuilder
+- `formatBody` 保留为内部 fallback / 测试入口
+
+**长度处理。**
+
+description 仍受 `EMBED_DESC_MAX = 4000` 截断；切断点选 fence 边界优先（保证 markdown 不破）。fields 各受 1024 char 限制，单独截断。
+
+**测试。**
+
+- 每个 per-tool renderer 各一例：Bash command + stdout 拆分；Read content + range；Grep pattern + path；WebFetch url；未知工具走 YAML
+- `jsonToYaml`：多行字符串→`|-`、嵌套对象→缩进、数组→`- `
+- 长度截断不破 fence（生成 5000 char 测试输入）
+- `formatBody` backward-compat 保留
+
+bump 0.0.37 → 0.0.38。
