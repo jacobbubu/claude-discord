@@ -8,6 +8,8 @@
  *   ⏳ dev / reset / stop / restart / logs / install / uninstall / status (slice 4/5)
  */
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { Command } from 'commander'
 import {
   cmdAllow,
@@ -32,11 +34,26 @@ import { status } from './status.ts'
 import { stop } from './stop.ts'
 import { uninstall } from './uninstall.ts'
 
+/**
+ * Read the runtime version from package.json so `--version` doesn't lie
+ * when the file gets bumped (the old hardcoded literal had drifted to 0.0.1
+ * while real releases were 0.0.40+).
+ */
+function readPackageVersion(): string {
+  try {
+    const pkgPath = join(import.meta.dir, '..', '..', 'package.json')
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { version?: string }
+    return typeof pkg.version === 'string' ? pkg.version : '0.0.0'
+  } catch {
+    return '0.0.0'
+  }
+}
+
 const program = new Command()
 program
   .name('claude-discord-bot')
   .description('machine-level agent gateway daemon for Discord × Claude Code')
-  .version('0.0.1')
+  .version(readPackageVersion())
 
 program.command('start').description('run daemon in foreground').action(() => start())
 
