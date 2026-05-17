@@ -40,13 +40,30 @@ const EMBED_FIELDS_MAX = 25
 const EMBED_FIELD_NAME_MAX = 256
 const EMBED_FIELD_VALUE_MAX = 1024
 const EMBED_TOTAL_MAX = 6000
+// §42 additional caps from Discord docs
+const EMBED_AUTHOR_NAME_MAX = 256
+const EMBED_FOOTER_TEXT_MAX = 2048
+const MAX_EMBEDS_PER_MESSAGE = 10
 
-/** Shape of the `embed` arg the `reply` tool accepts. */
+/** Shape of the `embed` (or each `embeds[]` entry) the `reply` tool accepts.
+ *
+ * §42 extended: \`author\` / \`image\` / \`thumbnail\` / \`footer\` / \`url\` /
+ * \`timestamp\` previously missing. \`image.url\` and \`thumbnail.url\` accept
+ * \`attachment://<filename>\` to reference a file uploaded in the same
+ * message's \`files\` array.
+ */
 export type ReplyEmbedInput = {
   title?: string
   description?: string
   color?: number
   fields?: Array<{ name: string; value: string; inline?: boolean }>
+  // §42
+  url?: string
+  timestamp?: string // ISO 8601
+  author?: { name: string; icon_url?: string; url?: string }
+  image?: { url: string }
+  thumbnail?: { url: string }
+  footer?: { text: string; icon_url?: string }
 }
 
 /** §32 / FR-5.4: validate an embed input against Discord's per-field and
@@ -101,6 +118,58 @@ export function validateEmbed(
     total += f.name.length + f.value.length
   }
 
+  // §42: validate optional structured fields and add their char weight before
+  // the 6000-total cap check, so over-budget embeds reject up-front.
+  if (input.author != null) {
+    if (typeof input.author !== 'object') return { ok: false, error: 'embed.author must be an object' }
+    if (typeof input.author.name !== 'string' || input.author.name.length === 0) {
+      return { ok: false, error: 'embed.author.name must be a non-empty string' }
+    }
+    if (input.author.name.length > EMBED_AUTHOR_NAME_MAX) {
+      return { ok: false, error: `embed.author.name > ${EMBED_AUTHOR_NAME_MAX} chars` }
+    }
+    total += input.author.name.length
+    if (input.author.icon_url != null && typeof input.author.icon_url !== 'string') {
+      return { ok: false, error: 'embed.author.icon_url must be a string' }
+    }
+    if (input.author.url != null && typeof input.author.url !== 'string') {
+      return { ok: false, error: 'embed.author.url must be a string' }
+    }
+  }
+
+  if (input.footer != null) {
+    if (typeof input.footer !== 'object') return { ok: false, error: 'embed.footer must be an object' }
+    if (typeof input.footer.text !== 'string' || input.footer.text.length === 0) {
+      return { ok: false, error: 'embed.footer.text must be a non-empty string' }
+    }
+    if (input.footer.text.length > EMBED_FOOTER_TEXT_MAX) {
+      return { ok: false, error: `embed.footer.text > ${EMBED_FOOTER_TEXT_MAX} chars` }
+    }
+    total += input.footer.text.length
+    if (input.footer.icon_url != null && typeof input.footer.icon_url !== 'string') {
+      return { ok: false, error: 'embed.footer.icon_url must be a string' }
+    }
+  }
+
+  if (input.image != null) {
+    if (typeof input.image !== 'object' || typeof input.image.url !== 'string') {
+      return { ok: false, error: 'embed.image.url must be a string' }
+    }
+  }
+  if (input.thumbnail != null) {
+    if (typeof input.thumbnail !== 'object' || typeof input.thumbnail.url !== 'string') {
+      return { ok: false, error: 'embed.thumbnail.url must be a string' }
+    }
+  }
+  if (input.url != null && typeof input.url !== 'string') {
+    return { ok: false, error: 'embed.url must be a string' }
+  }
+  if (input.timestamp != null) {
+    if (typeof input.timestamp !== 'string' || isNaN(Date.parse(input.timestamp))) {
+      return { ok: false, error: 'embed.timestamp must be an ISO 8601 string' }
+    }
+  }
+
   if (total > EMBED_TOTAL_MAX) {
     return { ok: false, error: `embed total ${total} chars > ${EMBED_TOTAL_MAX}` }
   }
@@ -112,6 +181,24 @@ export function validateEmbed(
   if (fields.length > 0) {
     eb.addFields(...fields.map(f => ({ name: f.name, value: f.value, inline: !!f.inline })))
   }
+  // §42 attachments / metadata
+  if (input.url != null) eb.setURL(input.url)
+  if (input.timestamp != null) eb.setTimestamp(new Date(input.timestamp))
+  if (input.author != null) {
+    eb.setAuthor({
+      name: input.author.name,
+      ...(input.author.icon_url != null ? { iconURL: input.author.icon_url } : {}),
+      ...(input.author.url != null ? { url: input.author.url } : {}),
+    })
+  }
+  if (input.footer != null) {
+    eb.setFooter({
+      text: input.footer.text,
+      ...(input.footer.icon_url != null ? { iconURL: input.footer.icon_url } : {}),
+    })
+  }
+  if (input.image != null) eb.setImage(input.image.url)
+  if (input.thumbnail != null) eb.setThumbnail(input.thumbnail.url)
   return { ok: true, embed: eb, totalChars: total }
 }
 
@@ -225,21 +312,45 @@ export async function toolReply(
   const text = (args.text as string | undefined) ?? ''
   const replyTo = args.reply_to as string | undefined
   const files = (args.files as string[] | undefined) ?? []
-  const embedInput = args.embed as ReplyEmbedInput | undefined
+  // §42: accept either legacy `embed` (single) or `embeds` (array). Normalize
+  // to a single array path so the send logic is uniform.
+  const singleEmbedInput = args.embed as ReplyEmbedInput | undefined
+  const arrayEmbedInput = args.embeds as ReplyEmbedInput[] | undefined
 
   if (typeof chatId !== 'string' || chatId.length === 0) return fail('chat_id required')
   if (files.length > MAX_FILES_PER_MESSAGE) {
     return fail(`max ${MAX_FILES_PER_MESSAGE} attachments per message`)
   }
 
-  // §32 / FR-5.4: validate embed up-front so a malformed input doesn't burn a
-  // round-trip and partial send.
-  let embed: EmbedBuilder | null = null
-  if (embedInput != null) {
-    if (typeof embedInput !== 'object') return fail('embed must be an object')
-    const res = validateEmbed(embedInput)
-    if (!res.ok) return fail(res.error)
-    embed = res.embed
+  if (singleEmbedInput != null && arrayEmbedInput != null) {
+    return fail('reply: pass either `embed` OR `embeds`, not both')
+  }
+  const embedInputs: ReplyEmbedInput[] = arrayEmbedInput
+    ? arrayEmbedInput
+    : singleEmbedInput
+      ? [singleEmbedInput]
+      : []
+  if (embedInputs.length > MAX_EMBEDS_PER_MESSAGE) {
+    return fail(`max ${MAX_EMBEDS_PER_MESSAGE} embeds per message (got ${embedInputs.length})`)
+  }
+
+  // §32 / §42: validate each embed up-front so a malformed input doesn't burn
+  // a round-trip and partial send. Discord's 6000-char total cap applies
+  // **across** all embeds in the message, so sum totalChars and reject early.
+  const embeds: EmbedBuilder[] = []
+  let combinedChars = 0
+  for (let i = 0; i < embedInputs.length; i++) {
+    const e = embedInputs[i]!
+    if (typeof e !== 'object' || e == null) return fail(`embeds[${i}] must be an object`)
+    const res = validateEmbed(e)
+    if (!res.ok) return fail(`embeds[${i}]: ${res.error}`)
+    embeds.push(res.embed)
+    combinedChars += res.totalChars
+  }
+  if (combinedChars > EMBED_TOTAL_MAX) {
+    return fail(
+      `combined embeds total ${combinedChars} chars > ${EMBED_TOTAL_MAX} (Discord caps the sum across all embeds in one message)`,
+    )
   }
 
   const ch = await fetchTextChannel(ctx, chatId)
@@ -261,14 +372,14 @@ export async function toolReply(
 
   const sentIds: string[] = []
 
-  if (embed != null) {
-    // §32: embed mode is single-message — the embed itself carries up to
-    // 6000 chars of structured content, so we don't chunk the (short) `text`
-    // companion. If text > HARD_CHUNK_LIMIT we still send it but Discord may
-    // reject; surface that as a normal send error.
+  if (embeds.length > 0) {
+    // §32 + §42: embed mode is single-message — embeds (up to 10) carry up
+    // to 6000 chars of structured content combined, so we don't chunk the
+    // (short) `text` companion. If text > HARD_CHUNK_LIMIT we still send it
+    // but Discord may reject; surface that as a normal send error.
     const opts: MessageCreateOptions = {
       ...(text.length > 0 ? { content: text } : {}),
-      embeds: [embed],
+      embeds,
       ...(attachments.length > 0 ? { files: attachments } : {}),
       ...(replyTo != null
         ? ({ reply: { messageReference: replyTo, failIfNotExists: false } } as MessageReplyOptions)

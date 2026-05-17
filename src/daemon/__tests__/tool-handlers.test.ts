@@ -560,6 +560,98 @@ describe('tool-handlers', () => {
     })
   })
 
+  describe('reply (§42: multi-embed)', () => {
+    it('embeds: [a, b, c] → channel.send gets all three in one message', async () => {
+      const { sendCalls } = mockDmChannel({})
+      const r = await dispatchToolCall(ctx, 'reply', {
+        chat_id: 'dm-u-1',
+        text: 'see embeds',
+        embeds: [
+          { title: 'meta', color: 0x5865f2 },
+          { title: 'input', description: '```bash\nls\n```' },
+          { title: 'output', description: '```text\na.ts\n```' },
+        ],
+      })
+      expectOk(r)
+      expect(sendCalls.length).toBe(1)
+      const opts = sendCalls[0]![0] as { embeds?: unknown[] }
+      expect(opts.embeds).toHaveLength(3)
+    })
+
+    it('passing both `embed` and `embeds` → error', async () => {
+      const { sendCalls } = mockDmChannel({})
+      const r = await dispatchToolCall(ctx, 'reply', {
+        chat_id: 'dm-u-1',
+        text: '',
+        embed: { title: 'one' },
+        embeds: [{ title: 'two' }],
+      })
+      expectFail(r)
+      expect(expectFail(r).error).toMatch(/either.*embed.*OR.*embeds/i)
+      expect(sendCalls.length).toBe(0)
+    })
+
+    it('>10 embeds → reject before any send', async () => {
+      const { sendCalls, fetched } = mockDmChannel({})
+      const r = await dispatchToolCall(ctx, 'reply', {
+        chat_id: 'dm-u-1',
+        text: '',
+        embeds: Array.from({ length: 11 }, (_, i) => ({ title: `e${i}` })),
+      })
+      expectFail(r)
+      expect(expectFail(r).error).toMatch(/max 10/)
+      expect(fetched).not.toHaveBeenCalled()
+      expect(sendCalls.length).toBe(0)
+    })
+
+    it('combined chars across all embeds > 6000 → reject', async () => {
+      const { sendCalls, fetched } = mockDmChannel({})
+      // 2 embeds × 3500 chars each = 7000 total
+      const r = await dispatchToolCall(ctx, 'reply', {
+        chat_id: 'dm-u-1',
+        text: '',
+        embeds: [
+          { description: 'x'.repeat(3500) },
+          { description: 'y'.repeat(3500) },
+        ],
+      })
+      expectFail(r)
+      expect(expectFail(r).error).toMatch(/combined.*6000/)
+      expect(fetched).not.toHaveBeenCalled()
+      expect(sendCalls.length).toBe(0)
+    })
+
+    it('single `embed` is backward-compatible (becomes embeds[0])', async () => {
+      const { sendCalls } = mockDmChannel({})
+      const r = await dispatchToolCall(ctx, 'reply', {
+        chat_id: 'dm-u-1',
+        text: '',
+        embed: { title: 'legacy' },
+      })
+      expectOk(r)
+      const opts = sendCalls[0]![0] as { embeds?: unknown[] }
+      expect(opts.embeds).toHaveLength(1)
+    })
+
+    it('embed with image.url attachment://x.png + files set', async () => {
+      const { sendCalls } = mockDmChannel({})
+      // The actual file existence check is done via assertSendable; this
+      // test relies on the path being a string that fails statSync — but the
+      // embed-side validation should pass independently. We don't actually
+      // pass a real file here; instead verify validateEmbed accepts the URL.
+      const r = await dispatchToolCall(ctx, 'reply', {
+        chat_id: 'dm-u-1',
+        text: '',
+        embeds: [{ title: 'png', image: { url: 'attachment://x.png' } }],
+      })
+      expectOk(r)
+      const opts = sendCalls[0]![0] as { embeds?: unknown[] }
+      // EmbedBuilder.data.image.url should preserve attachment:// scheme
+      const built = opts.embeds![0] as { data: { image?: { url: string } } }
+      expect(built.data.image?.url).toBe('attachment://x.png')
+    })
+  })
+
   describe('reply (§33: typing heartbeat stop)', () => {
     function withHeartbeat() {
       const send = vi.fn()
@@ -885,5 +977,58 @@ describe('validateEmbed (§32 / FR-5.4) — pure unit', () => {
     expect(validateEmbed({ title: 't', color: -1 }).ok).toBe(false)
     expect(validateEmbed({ title: 't', color: 0x1000000 }).ok).toBe(false)
     expect(validateEmbed({ title: 't', color: 0x4287f5 }).ok).toBe(true)
+  })
+})
+
+describe('validateEmbed §42 extended fields', () => {
+  it('accepts author + footer + image + thumbnail + url + timestamp', () => {
+    const r = validateEmbed({
+      title: 't',
+      url: 'https://example.com/x',
+      timestamp: '2026-05-17T00:00:00.000Z',
+      author: { name: 'rong', icon_url: 'https://e.com/a.png', url: 'https://e.com/u' },
+      footer: { text: 'foot', icon_url: 'https://e.com/f.png' },
+      image: { url: 'attachment://x.png' },
+      thumbnail: { url: 'https://e.com/t.png' },
+    })
+    if (!r.ok) throw new Error(r.error)
+    // author.name (4) + footer.text (4) + title (1) = 9
+    expect(r.totalChars).toBe(9)
+  })
+
+  it('counts author.name + footer.text toward 6000 total', () => {
+    const r = validateEmbed({
+      title: 't',
+      author: { name: 'x'.repeat(200) },
+      footer: { text: 'y'.repeat(300) },
+    })
+    if (!r.ok) throw new Error(r.error)
+    expect(r.totalChars).toBe(1 + 200 + 300)
+  })
+
+  it('rejects empty author.name', () => {
+    expect(validateEmbed({ author: { name: '' } as never }).ok).toBe(false)
+  })
+
+  it('rejects author.name > 256', () => {
+    expect(validateEmbed({ author: { name: 'x'.repeat(257) } }).ok).toBe(false)
+  })
+
+  it('rejects footer.text > 2048', () => {
+    expect(validateEmbed({ footer: { text: 'x'.repeat(2049) } }).ok).toBe(false)
+  })
+
+  it('rejects non-string image.url', () => {
+    expect(validateEmbed({ image: { url: 123 } as never }).ok).toBe(false)
+  })
+
+  it('rejects invalid timestamp', () => {
+    expect(validateEmbed({ timestamp: 'not a date' }).ok).toBe(false)
+    expect(validateEmbed({ timestamp: '2026-05-17T00:00:00.000Z' }).ok).toBe(true)
+  })
+
+  it('accepts attachment:// reference in image.url', () => {
+    const r = validateEmbed({ image: { url: 'attachment://x.png' } })
+    expect(r.ok).toBe(true)
   })
 })
