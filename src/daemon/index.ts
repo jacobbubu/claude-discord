@@ -18,7 +18,6 @@ import { startApprovalWatcher } from './approval-watcher.ts'
 import { startDiscordGateway } from './discord-gateway.ts'
 import { makeInboundHandler } from './inbound-router.ts'
 import { PermissionRelay } from './permission-relay.ts'
-import { reconcileIndicators } from './pinned-indicator.ts'
 import { WorkspaceRegistry } from './registry.ts'
 import { RingBufferMap } from './ring-buffer.ts'
 import { RoutingTable } from './routing.ts'
@@ -28,6 +27,7 @@ import {
   registerSlashCommands,
   workspaceListChanged,
 } from './slash-commands.ts'
+import { reconcileWorkspaceIndicators } from './workspace-indicator.ts'
 import {
   startSocketServer,
   type CcPermissionRequestHandler,
@@ -230,12 +230,12 @@ export async function runDaemon(): Promise<void> {
       const token = process.env.DISCORD_BOT_TOKEN
       if (!token) return
 
-      // §53: catch up any channel whose indicator was lost across restarts
-      // (manual pin delete, daemon crash mid-bind, upgrade from a version
-      // that didn't track indicators). Fire-and-forget — slash registration
-      // shouldn't wait on Discord API roundtrips for every bound channel.
-      void reconcileIndicators({ gateway, routing }).catch(e =>
-        log.warn(`pinned-indicator: startup reconcile failed: ${e}`),
+      // §54: bring every bound channel's indicator into the right state on
+      // startup — sets guild topics, refreshes DM pins, and migrates §53-era
+      // pinned messages off guild channels. Fire-and-forget so slash
+      // registration isn't blocked by Discord API roundtrips per channel.
+      void reconcileWorkspaceIndicators({ gateway, routing }).catch(e =>
+        log.warn(`workspace-indicator: startup reconcile failed: ${e}`),
       )
 
       // Note: registry.onChange isn't subscribed yet, so any plugin that

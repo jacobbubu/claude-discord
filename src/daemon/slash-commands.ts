@@ -32,7 +32,7 @@ const ALL_CONTEXTS = [
 ] as const
 import { readAccessFile } from './access-control.ts'
 import type { DiscordGateway } from './discord-gateway.ts'
-import { syncIndicator, unpinIndicator } from './pinned-indicator.ts'
+import { applyWorkspaceIndicator, clearWorkspaceIndicator } from './workspace-indicator.ts'
 import type { WorkspaceRegistry } from './registry.ts'
 import { shouldAutoDisplay, type RingBufferMap } from './ring-buffer.ts'
 import type { RoutingTable } from './routing.ts'
@@ -250,9 +250,9 @@ async function handleAutocomplete(deps: SlashDeps, i: AutocompleteInteraction): 
 }
 
 /**
- * Bind a channel to a workspace: persist routing + refresh the pinned
- * workspace indicator (§53). Same code path for /use, /last, and the
- * use-move button so all three keep the indicator in sync.
+ * Bind a channel to a workspace: persist routing + refresh the workspace
+ * indicator (§54: topic for guild, pinned message for DM). Same code path for
+ * /use, /last, and the use-move button so all three keep the indicator in sync.
  */
 async function bindChannelToWorkspace(
   deps: SlashDeps,
@@ -260,7 +260,7 @@ async function bindChannelToWorkspace(
   workspace: string,
 ): Promise<void> {
   deps.routing.set(channelId, workspace, Date.now())
-  await syncIndicator({ gateway: deps.gateway, routing: deps.routing }, channelId)
+  await applyWorkspaceIndicator({ gateway: deps.gateway, routing: deps.routing }, channelId)
 }
 
 /** Auto-show /recent context after a bind, when the heuristic says it's useful. */
@@ -330,11 +330,10 @@ async function handleUseButton(deps: SlashDeps, i: ButtonInteraction): Promise<v
   // Re-check current binding at click time (state may have changed since the
   // prompt was shown) — idempotent.
   const others = deps.routing.channelsFor(workspace).filter(c => c !== channelId)
-  // §53: tear down the old channel's pinned indicator before we drop its
-  // routing entry; otherwise the message stays pinned forever with a stale
-  // workspace label.
+  // §54: tear down the old channel's indicator (topic or pinned) before we
+  // drop its routing entry; otherwise it lingers with a stale workspace label.
   for (const c of others) {
-    await unpinIndicator({ gateway: deps.gateway, routing: deps.routing }, c)
+    await clearWorkspaceIndicator({ gateway: deps.gateway, routing: deps.routing }, c)
     deps.routing.unset(c)
   }
   await bindChannelToWorkspace(deps, channelId, workspace)

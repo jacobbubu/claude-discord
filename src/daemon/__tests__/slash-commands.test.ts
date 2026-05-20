@@ -120,10 +120,10 @@ describe('slash-commands', () => {
 
     gateway = {
       client: {
-        // pinned-indicator (§53) calls channels.fetch on every bind. Returning
-        // null short-circuits the indicator branch quietly — routing + reply
-        // logic still runs, which is what the slash-command tests assert.
-        // Indicator behavior itself is covered in pinned-indicator.test.ts.
+        // workspace-indicator (§54) calls channels.fetch on every bind.
+        // Returning null short-circuits the indicator branch quietly — routing
+        // + reply logic still runs, which is what the slash-command tests
+        // assert. Indicator behavior itself lives in workspace-indicator.test.ts.
         channels: {
           fetch: vi.fn().mockResolvedValue(null),
         },
@@ -221,7 +221,7 @@ describe('slash-commands', () => {
       expect(routing.get('c-1')?.workspace).toBe('foo')
     })
 
-    it('triggers the pinned workspace indicator on switch (§53)', async () => {
+    it('triggers the workspace indicator on switch (§54)', async () => {
       registerWorkspace('foo')
       const { interaction } = makeChatInputInteraction({
         commandName: 'use',
@@ -230,7 +230,7 @@ describe('slash-commands', () => {
       })
       dispatch(interaction)
       await new Promise(r => setImmediate(r))
-      // bind path goes through syncIndicator, which fetches the channel.
+      // bind path goes through applyWorkspaceIndicator, which fetches the channel.
       const fetchSpy = (gateway.client as unknown as { channels: { fetch: ReturnType<typeof vi.fn> } }).channels.fetch
       expect(fetchSpy).toHaveBeenCalledWith('c-1')
     })
@@ -403,7 +403,7 @@ describe('slash-commands', () => {
       expect(routing.get('c-1')?.workspace).toBe('foo')
     })
 
-    it('triggers the pinned workspace indicator on /last (§53)', async () => {
+    it('triggers the workspace indicator on /last (§54)', async () => {
       registerWorkspace('foo')
       registerWorkspace('bar')
       routing.set('c-1', 'foo', 1)
@@ -413,7 +413,7 @@ describe('slash-commands', () => {
       const { interaction } = makeChatInputInteraction({ commandName: 'last' })
       dispatch(interaction)
       await new Promise(r => setImmediate(r))
-      // /last re-binds → syncIndicator → channels.fetch fires for c-1.
+      // /last re-binds → applyWorkspaceIndicator → channels.fetch fires for c-1.
       expect(fetchSpy.mock.calls.length).toBeGreaterThan(callsBefore)
       expect(fetchSpy).toHaveBeenLastCalledWith('c-1')
     })
