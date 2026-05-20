@@ -65,4 +65,59 @@ describe('RoutingTable', () => {
     const t2 = new RoutingTable(path)
     expect(t2.get('c1')).toBeNull()
   })
+
+  describe('indicator_message_id (§53)', () => {
+    it('setIndicatorMessageId persists across instances', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'rt-'))
+      const path = join(dir, 'routing.json')
+      const t = new RoutingTable(path)
+      t.set('c1', 'foo', 1)
+      t.setIndicatorMessageId('c1', 'msg-123')
+      expect(t.get('c1')?.indicator_message_id).toBe('msg-123')
+
+      const t2 = new RoutingTable(path)
+      expect(t2.get('c1')?.indicator_message_id).toBe('msg-123')
+    })
+
+    it('preserves indicator_message_id across workspace switch (set)', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'rt-'))
+      const t = new RoutingTable(join(dir, 'routing.json'))
+      t.set('c1', 'foo', 1)
+      t.setIndicatorMessageId('c1', 'msg-123')
+      t.set('c1', 'bar', 2)
+      // workspace changed, indicator carries over (we edit the same message)
+      expect(t.get('c1')?.workspace).toBe('bar')
+      expect(t.get('c1')?.indicator_message_id).toBe('msg-123')
+    })
+
+    it('setIndicatorMessageId(null) clears the id', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'rt-'))
+      const t = new RoutingTable(join(dir, 'routing.json'))
+      t.set('c1', 'foo', 1)
+      t.setIndicatorMessageId('c1', 'msg-123')
+      t.setIndicatorMessageId('c1', null)
+      expect(t.get('c1')?.indicator_message_id).toBeUndefined()
+    })
+
+    it('setIndicatorMessageId no-ops when channel has no entry', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'rt-'))
+      const t = new RoutingTable(join(dir, 'routing.json'))
+      t.setIndicatorMessageId('c-ghost', 'msg-123') // no throw, no entry created
+      expect(t.get('c-ghost')).toBeNull()
+    })
+
+    it('reads existing routing.json that lacks indicator_message_id (backward compat)', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'rt-'))
+      const path = join(dir, 'routing.json')
+      writeFileSync(path, JSON.stringify({
+        version: 1,
+        channels: {
+          c1: { workspace: 'foo', history: [], switched_at: 1 },
+        },
+      }))
+      const t = new RoutingTable(path)
+      expect(t.get('c1')?.workspace).toBe('foo')
+      expect(t.get('c1')?.indicator_message_id).toBeUndefined()
+    })
+  })
 })

@@ -120,12 +120,14 @@ describe('slash-commands', () => {
 
     gateway = {
       client: {
+        // pinned-indicator (§53) calls channels.fetch on every bind. Returning
+        // null short-circuits the indicator branch quietly — routing + reply
+        // logic still runs, which is what the slash-command tests assert.
+        // Indicator behavior itself is covered in pinned-indicator.test.ts.
         channels: {
-          fetch: vi.fn().mockResolvedValue(null), // applyTopic falls through quietly
+          fetch: vi.fn().mockResolvedValue(null),
         },
-        user: {
-          setPresence: vi.fn(),
-        },
+        user: { id: 'bot-self' },
       } as never,
       send: vi.fn().mockResolvedValue({ id: 'm-fake' }),
       isRecentSent: () => false,
@@ -219,7 +221,7 @@ describe('slash-commands', () => {
       expect(routing.get('c-1')?.workspace).toBe('foo')
     })
 
-    it('updates bot custom status (presence) on switch (deltas §12)', async () => {
+    it('triggers the pinned workspace indicator on switch (§53)', async () => {
       registerWorkspace('foo')
       const { interaction } = makeChatInputInteraction({
         commandName: 'use',
@@ -228,11 +230,9 @@ describe('slash-commands', () => {
       })
       dispatch(interaction)
       await new Promise(r => setImmediate(r))
-      const setPresence = (gateway.client as unknown as { user: { setPresence: ReturnType<typeof vi.fn> } }).user.setPresence
-      expect(setPresence).toHaveBeenCalled()
-      const arg = setPresence.mock.calls[0]![0] as { activities: Array<{ name: string }>; status: string }
-      expect(arg.activities[0]!.name).toBe('foo')
-      expect(arg.status).toBe('online')
+      // bind path goes through syncIndicator, which fetches the channel.
+      const fetchSpy = (gateway.client as unknown as { channels: { fetch: ReturnType<typeof vi.fn> } }).channels.fetch
+      expect(fetchSpy).toHaveBeenCalledWith('c-1')
     })
 
     it('reply includes target workspace pid + last-active timestamp (#67)', async () => {
@@ -403,17 +403,19 @@ describe('slash-commands', () => {
       expect(routing.get('c-1')?.workspace).toBe('foo')
     })
 
-    it('updates bot custom status on /last (deltas §12)', async () => {
+    it('triggers the pinned workspace indicator on /last (§53)', async () => {
       registerWorkspace('foo')
       registerWorkspace('bar')
       routing.set('c-1', 'foo', 1)
       routing.set('c-1', 'bar', 2)
+      const fetchSpy = (gateway.client as unknown as { channels: { fetch: ReturnType<typeof vi.fn> } }).channels.fetch
+      const callsBefore = fetchSpy.mock.calls.length
       const { interaction } = makeChatInputInteraction({ commandName: 'last' })
       dispatch(interaction)
       await new Promise(r => setImmediate(r))
-      const setPresence = (gateway.client as unknown as { user: { setPresence: ReturnType<typeof vi.fn> } }).user.setPresence
-      const arg = setPresence.mock.calls[0]![0] as { activities: Array<{ name: string }> }
-      expect(arg.activities[0]!.name).toBe('foo')
+      // /last re-binds → syncIndicator → channels.fetch fires for c-1.
+      expect(fetchSpy.mock.calls.length).toBeGreaterThan(callsBefore)
+      expect(fetchSpy).toHaveBeenLastCalledWith('c-1')
     })
 
     it('rejects when previous workspace is offline', async () => {

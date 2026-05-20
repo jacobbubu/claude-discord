@@ -10,7 +10,6 @@
 
 import {
   ActionRowBuilder,
-  ActivityType,
   ApplicationCommandOptionType,
   type AutocompleteInteraction,
   ButtonBuilder,
@@ -23,7 +22,6 @@ import {
   REST,
   Routes,
   SlashCommandBuilder,
-  TextChannel,
 } from 'discord.js'
 
 // Make commands usable in guild text channels, bot DMs, and group/private DMs.
@@ -34,6 +32,7 @@ const ALL_CONTEXTS = [
 ] as const
 import { readAccessFile } from './access-control.ts'
 import type { DiscordGateway } from './discord-gateway.ts'
+import { syncIndicator, unpinIndicator } from './pinned-indicator.ts'
 import type { WorkspaceRegistry } from './registry.ts'
 import { shouldAutoDisplay, type RingBufferMap } from './ring-buffer.ts'
 import type { RoutingTable } from './routing.ts'
@@ -250,15 +249,18 @@ async function handleAutocomplete(deps: SlashDeps, i: AutocompleteInteraction): 
   await i.respond(matches.map(w => ({ name: w, value: w }))).catch(() => {})
 }
 
-/** Bind a channel to a workspace: persist routing + refresh topic + presence. */
+/**
+ * Bind a channel to a workspace: persist routing + refresh the pinned
+ * workspace indicator (§53). Same code path for /use, /last, and the
+ * use-move button so all three keep the indicator in sync.
+ */
 async function bindChannelToWorkspace(
   deps: SlashDeps,
   channelId: string,
   workspace: string,
 ): Promise<void> {
   deps.routing.set(channelId, workspace, Date.now())
-  await applyTopic(deps, channelId, workspace)
-  applyPresence(deps, workspace)
+  await syncIndicator({ gateway: deps.gateway, routing: deps.routing }, channelId)
 }
 
 /** Auto-show /recent context after a bind, when the heuristic says it's useful. */
@@ -328,7 +330,13 @@ async function handleUseButton(deps: SlashDeps, i: ButtonInteraction): Promise<v
   // Re-check current binding at click time (state may have changed since the
   // prompt was shown) — idempotent.
   const others = deps.routing.channelsFor(workspace).filter(c => c !== channelId)
-  for (const c of others) deps.routing.unset(c)
+  // §53: tear down the old channel's pinned indicator before we drop its
+  // routing entry; otherwise the message stays pinned forever with a stale
+  // workspace label.
+  for (const c of others) {
+    await unpinIndicator({ gateway: deps.gateway, routing: deps.routing }, c)
+    deps.routing.unset(c)
+  }
   await bindChannelToWorkspace(deps, channelId, workspace)
   const was = others.length > 0 ? ` (was ${others.map(c => `<#${c}>`).join(', ')})` : ''
   await i
@@ -355,9 +363,7 @@ async function handleLast(deps: SlashDeps, i: ChatInputCommandInteraction): Prom
     })
     return
   }
-  deps.routing.set(channelId, prev, Date.now())
-  await applyTopic(deps, channelId, prev)
-  applyPresence(deps, prev)
+  await bindChannelToWorkspace(deps, channelId, prev)
   await i.reply(`✅ switched back to ${prev}${formatWorkspaceHealth(deps, prev)}`)
 }
 
@@ -499,39 +505,6 @@ function formatRecent(
     return `[<t:${t}:t> · <t:${t}:R>] ${arrow} ${e.textPreview}`
   })
   return `**${workspace}** recent ${entries.length}:\n${lines.join('\n')}`
-}
-
-async function applyTopic(deps: SlashDeps, channelId: string, workspace: string): Promise<void> {
-  try {
-    const ch = await deps.gateway.client.channels.fetch(channelId)
-    if (ch && ch instanceof TextChannel) {
-      await ch.setTopic(`[claude-discord] ${workspace}`)
-    }
-  } catch (e) {
-    // DM channels and partial channels can't have topics; ignore quietly
-    log.debug(`applyTopic: ${e}`)
-  }
-}
-
-/**
- * Reflect current routing in the bot's global Discord presence (custom status).
- * DM has no channel-topic UI, so this is the only "always-visible" indicator
- * across guilds/DMs of which workspace the bot is currently routed to.
- *
- * Architecture deltas §12. Single global activity — only the most recent
- * `/use` / `/last` is reflected, intentionally.
- */
-function applyPresence(deps: SlashDeps, workspace: string): void {
-  try {
-    deps.gateway.client.user?.setPresence({
-      activities: [
-        { name: workspace, type: ActivityType.Custom, state: workspace },
-      ],
-      status: 'online',
-    })
-  } catch (e) {
-    log.debug(`applyPresence: ${e}`)
-  }
 }
 
 // Silence unused-warning for ApplicationCommandOptionType (some lint configs)

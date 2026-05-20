@@ -13,6 +13,10 @@ const RoutingEntrySchema = z.object({
   workspace: z.string(),
   history: z.array(z.string()).default([]),
   switched_at: z.number().int(),
+  // §53: id of the pinned message in this channel that reflects the current
+  // workspace binding. Absent on first run / old daemon versions; daemon
+  // reconcile fills it in.
+  indicator_message_id: z.string().optional(),
 })
 
 const RoutingSchema = z.object({
@@ -107,6 +111,10 @@ export class RoutingTable {
       workspace,
       history,
       switched_at: now,
+      // §53: switching workspace inside the same channel reuses the same
+      // pinned indicator message — we just edit its content. Preserve the id
+      // so syncIndicator can find it.
+      ...(prev?.indicator_message_id ? { indicator_message_id: prev.indicator_message_id } : {}),
     }
     this.lastSelfWriteAt = Date.now()
     atomicWrite(this.path, JSON.stringify(this.data, null, 2) + '\n', 0o600)
@@ -118,6 +126,28 @@ export class RoutingTable {
     } catch {}
     // Start watcher lazily if it wasn't running (file existed only after first set).
     if (!this.watcher) this.startWatching()
+  }
+
+  /**
+   * §53: record (or clear) the pinned-indicator message id for a channel.
+   * No-op when the channel has no routing entry (you can't have an indicator
+   * for an unbound channel; the unbind path deletes the entry entirely).
+   */
+  setIndicatorMessageId(channelId: string, id: string | null): void {
+    const entry = this.data.channels[channelId]
+    if (!entry) return
+    if (id) {
+      if (entry.indicator_message_id === id) return
+      entry.indicator_message_id = id
+    } else {
+      if (entry.indicator_message_id === undefined) return
+      delete entry.indicator_message_id
+    }
+    this.lastSelfWriteAt = Date.now()
+    atomicWrite(this.path, JSON.stringify(this.data, null, 2) + '\n', 0o600)
+    try {
+      this.lastSelfWriteAt = statSync(this.path).mtimeMs
+    } catch {}
   }
 
   list(): Array<{ channelId: string } & RoutingEntry> {
