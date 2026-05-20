@@ -111,9 +111,9 @@ export class RoutingTable {
       workspace,
       history,
       switched_at: now,
-      // §53: switching workspace inside the same channel reuses the same
-      // pinned indicator message — we just edit its content. Preserve the id
-      // so syncIndicator can find it.
+      // §53/§54: switching workspace inside the same channel reuses the same
+      // pinned indicator message (DM case) — we just edit its content.
+      // Preserve the id so the workspace-indicator can find it.
       ...(prev?.indicator_message_id ? { indicator_message_id: prev.indicator_message_id } : {}),
     }
     this.lastSelfWriteAt = Date.now()
@@ -129,7 +129,8 @@ export class RoutingTable {
   }
 
   /**
-   * §53: record (or clear) the pinned-indicator message id for a channel.
+   * §53/§54: record (or clear) the pinned-indicator message id for a channel
+   * (used by the DM indicator path).
    * No-op when the channel has no routing entry (you can't have an indicator
    * for an unbound channel; the unbind path deletes the entry entirely).
    */
