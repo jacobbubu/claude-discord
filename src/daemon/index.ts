@@ -18,6 +18,7 @@ import { startApprovalWatcher } from './approval-watcher.ts'
 import { startDiscordGateway } from './discord-gateway.ts'
 import { makeInboundHandler } from './inbound-router.ts'
 import { PermissionRelay } from './permission-relay.ts'
+import { reconcileIndicators } from './pinned-indicator.ts'
 import { WorkspaceRegistry } from './registry.ts'
 import { RingBufferMap } from './ring-buffer.ts'
 import { RoutingTable } from './routing.ts'
@@ -228,6 +229,14 @@ export async function runDaemon(): Promise<void> {
     gateway.client.once('clientReady', async () => {
       const token = process.env.DISCORD_BOT_TOKEN
       if (!token) return
+
+      // §53: catch up any channel whose indicator was lost across restarts
+      // (manual pin delete, daemon crash mid-bind, upgrade from a version
+      // that didn't track indicators). Fire-and-forget — slash registration
+      // shouldn't wait on Discord API roundtrips for every bound channel.
+      void reconcileIndicators({ gateway, routing }).catch(e =>
+        log.warn(`pinned-indicator: startup reconcile failed: ${e}`),
+      )
 
       // Note: registry.onChange isn't subscribed yet, so any plugin that
       // registers during this window just updates the registry — no PUT
