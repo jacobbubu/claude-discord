@@ -22,6 +22,7 @@ import {
 } from 'discord.js'
 import { readAccessFile } from './access-control.ts'
 import type { DiscordGateway } from './discord-gateway.ts'
+import type { ErrorNotifier } from './error-notice.ts'
 import type { RingBufferMap } from './ring-buffer.ts'
 import { assertSendable, safeAttName } from './safety.ts'
 import type { TypingHeartbeat } from './typing-heartbeat.ts'
@@ -210,6 +211,10 @@ export type ToolContext = {
   /** §33: stopped on successful reply/edit_message/thread_reply so the
    *  "typing…" indicator doesn't outlive CC's response. */
   typingHeartbeat?: TypingHeartbeat
+  /** §55 (issue #136): on a reply-tool file/send failure, post a short ⚠️
+   *  notice to the source channel so the user sees the failure even if
+   *  Claude Code doesn't relay the tool error itself. */
+  errorNotifier?: ErrorNotifier
   /** §35: notified on successful reply-class tool call. Daemon wires this to
    *  the workspace conn's `startSunset()` so the turn moves from active →
    *  sunset, and after the tail timer fires → idle (defers subsequent
@@ -362,11 +367,15 @@ export async function toolReply(
       assertSendable(f, ctx.paths)
       const st = statSync(f)
       if (st.size > MAX_FILE_BYTES) {
-        return fail(`file too large: ${f} (${(st.size / 1024 / 1024).toFixed(1)}MB)`)
+        const msg = `file too large: ${f} (${(st.size / 1024 / 1024).toFixed(1)}MB)`
+        void ctx.errorNotifier?.notify(chatId, 'file', msg) // §55
+        return fail(msg)
       }
       attachments.push(new AttachmentBuilder(f))
     } catch (e) {
-      return fail(e instanceof Error ? e.message : String(e))
+      const msg = e instanceof Error ? e.message : String(e)
+      void ctx.errorNotifier?.notify(chatId, 'file', msg) // §55
+      return fail(msg)
     }
   }
 
@@ -392,7 +401,9 @@ export async function toolReply(
       // §33: stop typing on send failure too — CC won't retry through us,
       // and a stale dot until the 5min cap is worse than no dot.
       ctx.typingHeartbeat?.stop(chatId)
-      return fail(`reply (embed) failed: ${e instanceof Error ? e.message : String(e)}`)
+      const msg = e instanceof Error ? e.message : String(e)
+      void ctx.errorNotifier?.notify(chatId, 'send', msg) // §55
+      return fail(`reply (embed) failed: ${msg}`)
     }
   } else {
     const access = readAccessFile(ctx.paths.accessFile)
@@ -417,6 +428,7 @@ export async function toolReply(
       } catch (e) {
         const err = e instanceof Error ? e.message : String(e)
         ctx.typingHeartbeat?.stop(chatId) // §33
+        void ctx.errorNotifier?.notify(chatId, 'send', err) // §55
         return fail(`reply failed after ${sentIds.length} of ${chunks.length} chunk(s): ${err}`)
       }
     }

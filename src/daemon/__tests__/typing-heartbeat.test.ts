@@ -135,4 +135,34 @@ describe('TypingHeartbeat (§33)', () => {
     expect(() => hb.stopByWorkspace('ws-nope')).not.toThrow()
     expect(hb.activeCount).toBe(1)
   })
+
+  it('§55: calls onStuck with the chatId when the safety cap trips', () => {
+    const onStuck = vi.fn()
+    const hb = new TypingHeartbeat(vi.fn(), { intervalMs: 100, maxMs: 500, onStuck })
+    hb.start('c-1')
+    expect(onStuck).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(500)
+    expect(onStuck).toHaveBeenCalledTimes(1)
+    expect(onStuck).toHaveBeenCalledWith('c-1')
+  })
+
+  it('§55: does not call onStuck when stopped before the cap', () => {
+    const onStuck = vi.fn()
+    const hb = new TypingHeartbeat(vi.fn(), { intervalMs: 100, maxMs: 500, onStuck })
+    hb.start('c-1')
+    vi.advanceTimersByTime(200)
+    hb.stop('c-1')
+    vi.advanceTimersByTime(1_000)
+    expect(onStuck).not.toHaveBeenCalled()
+  })
+
+  it('§55: an onStuck that throws does not break the cap teardown', () => {
+    const onStuck = vi.fn(() => {
+      throw new Error('boom')
+    })
+    const hb = new TypingHeartbeat(vi.fn(), { intervalMs: 100, maxMs: 500, onStuck })
+    hb.start('c-1')
+    expect(() => vi.advanceTimersByTime(500)).not.toThrow()
+    expect(hb.activeCount).toBe(0)
+  })
 })

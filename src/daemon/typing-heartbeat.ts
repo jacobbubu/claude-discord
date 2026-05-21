@@ -19,6 +19,10 @@ export type TypingHeartbeatOpts = {
   intervalMs?: number
   /** Safety cap: stop & warn after this much wall time. Default 5min. */
   maxMs?: number
+  /** §55 (issue #136): called with the chatId when the safety cap trips.
+   *  The daemon wires this to ErrorNotifier so the user gets an explicit
+   *  in-channel "CC may be stuck" notice instead of just a vanished dot. */
+  onStuck?: (chatId: string) => void
 }
 
 type Entry = {
@@ -32,6 +36,7 @@ type Entry = {
 export class TypingHeartbeat {
   private readonly intervalMs: number
   private readonly maxMs: number
+  private readonly onStuck?: (chatId: string) => void
   private readonly timers = new Map<string, Entry>()
 
   constructor(
@@ -40,6 +45,7 @@ export class TypingHeartbeat {
   ) {
     this.intervalMs = opts.intervalMs ?? 8_000
     this.maxMs = opts.maxMs ?? 5 * 60_000
+    this.onStuck = opts.onStuck
   }
 
   /**
@@ -58,6 +64,13 @@ export class TypingHeartbeat {
         `typing-heartbeat: max ${this.maxMs}ms reached for ${chatId}; stopping (CC may be stuck)`,
       )
       this.stop(chatId)
+      // §55 (issue #136): the vanished typing dot is a weak signal — also
+      // surface an explicit in-channel notice that CC stalled.
+      try {
+        this.onStuck?.(chatId)
+      } catch (e) {
+        log.warn(`typing-heartbeat: onStuck(${chatId}) threw: ${e}`)
+      }
     }, this.maxMs)
     ;(deadline as unknown as { unref?: () => void }).unref?.()
     this.timers.set(chatId, { interval, deadline, workspace })

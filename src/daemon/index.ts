@@ -16,6 +16,7 @@ import { readPackageVersion } from '../shared/package-version.ts'
 import { resolvePaths } from '../shared/paths.ts'
 import { startApprovalWatcher } from './approval-watcher.ts'
 import { startDiscordGateway } from './discord-gateway.ts'
+import { ErrorNotifier } from './error-notice.ts'
 import { makeInboundHandler } from './inbound-router.ts'
 import { PermissionRelay } from './permission-relay.ts'
 import { WorkspaceRegistry } from './registry.ts'
@@ -67,20 +68,34 @@ export async function runDaemon(): Promise<void> {
 
   const gateway = await startDiscordGateway(paths)
 
+  // §55 (issue #136): surface turn failures the daemon can observe (stuck CC,
+  // reply-tool file/send errors) into the source Discord channel, so the user
+  // isn't left guessing when only the daemon log has the reason.
+  const errorNotifier = gateway
+    ? new ErrorNotifier((channelId, content) => gateway.send(channelId, content))
+    : null
+
   // §33: keep the "claude is typing…" dot alive between inbound and reply,
   // re-typing every ~8s so long CC tasks don't look hung. Started by
   // inbound-router on each inbound; stopped by reply/edit/thread tool handlers.
   const typingHeartbeat = gateway
-    ? new TypingHeartbeat(async chatId => {
-        try {
-          const ch = await gateway.client.channels.fetch(chatId)
-          if (ch && 'sendTyping' in ch) {
-            await (ch as { sendTyping: () => Promise<void> }).sendTyping()
+    ? new TypingHeartbeat(
+        async chatId => {
+          try {
+            const ch = await gateway.client.channels.fetch(chatId)
+            if (ch && 'sendTyping' in ch) {
+              await (ch as { sendTyping: () => Promise<void> }).sendTyping()
+            }
+          } catch {
+            /* best-effort */
           }
-        } catch {
-          /* best-effort */
-        }
-      })
+        },
+        {
+          // §55: when the 5min safety cap trips, tell the user in-channel
+          // instead of just letting the typing dot vanish silently.
+          onStuck: chatId => void errorNotifier?.notify(chatId, 'stuck'),
+        },
+      )
     : null
 
   // §33: plugin disconnects / cap-evictions clear that workspace's typing
@@ -98,6 +113,7 @@ export async function runDaemon(): Promise<void> {
           paths,
           workspace,
           typingHeartbeat: typingHeartbeat ?? undefined,
+          errorNotifier: errorNotifier ?? undefined,
           // §35: on successful reply-class tool, slide the workspace's turn
           // into sunset (30s tail) so subsequent terminal-driven tool calls
           // get correctly deferred to TUI / dropped from trace.

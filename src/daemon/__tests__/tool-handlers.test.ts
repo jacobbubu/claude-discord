@@ -13,6 +13,7 @@ import { ChannelType } from 'discord.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { writeAccessFile } from '../access-control.ts'
 import type { DiscordGateway } from '../discord-gateway.ts'
+import { ErrorNotifier } from '../error-notice.ts'
 import { RingBufferMap } from '../ring-buffer.ts'
 import { dispatchToolCall, validateEmbed, type ToolContext, type ToolOutcome } from '../tool-handlers.ts'
 import { TypingHeartbeat } from '../typing-heartbeat.ts'
@@ -732,6 +733,60 @@ describe('tool-handlers', () => {
       // still ticking — react is an ack, not a reply
       expect(hb.activeCount).toBe(1)
       hb.stopAll() // cleanup
+    })
+  })
+
+  describe('reply (§55: error notice → Discord)', () => {
+    function withErrorNotifier() {
+      const notifySend = vi.fn().mockResolvedValue({ id: 'notice-1' })
+      ctx = { ...ctx, errorNotifier: new ErrorNotifier(notifySend) }
+      return { notifySend }
+    }
+
+    it('posts a send-failure notice when the reply send throws', async () => {
+      const { notifySend } = withErrorNotifier()
+      const chatId = 'dm-u-1'
+      const channel = {
+        id: chatId,
+        type: ChannelType.DM,
+        isTextBased: () => true,
+        isThread: () => false,
+        recipientId: 'u-1',
+        send: vi.fn().mockRejectedValue(new Error('discord 500')),
+      }
+      ;(gateway.client.channels as unknown as { fetch: ReturnType<typeof vi.fn> }).fetch = vi
+        .fn()
+        .mockResolvedValue(channel)
+
+      const r = await dispatchToolCall(ctx, 'reply', { chat_id: chatId, text: 'hi' })
+      expectFail(r)
+      expect(notifySend).toHaveBeenCalledTimes(1)
+      const [noticeChannel, noticeText] = notifySend.mock.calls[0]!
+      expect(noticeChannel).toBe(chatId)
+      expect(noticeText).toContain('⚠️')
+      expect(noticeText).toContain('发送失败')
+    })
+
+    it('posts a file-error notice when an attachment is unreadable', async () => {
+      const { notifySend } = withErrorNotifier()
+      mockDmChannel({})
+      const r = await dispatchToolCall(ctx, 'reply', {
+        chat_id: 'dm-u-1',
+        text: 'see file',
+        files: ['/no/such/path/missing-file.txt'],
+      })
+      expectFail(r)
+      expect(notifySend).toHaveBeenCalledTimes(1)
+      expect(notifySend.mock.calls[0]![0]).toBe('dm-u-1')
+      expect(notifySend.mock.calls[0]![1]).toContain('⚠️')
+    })
+
+    it('does not post a notice on a successful reply', async () => {
+      const { notifySend } = withErrorNotifier()
+      mockDmChannel({})
+      const r = await dispatchToolCall(ctx, 'reply', { chat_id: 'dm-u-1', text: 'hi' })
+      expectOk(r)
+      expect(notifySend).not.toHaveBeenCalled()
     })
   })
 
