@@ -106,6 +106,21 @@ export class TypingHeartbeat {
     return this.timers.size
   }
 
+  /**
+   * §55b (issue #140): chatIds with an active heartbeat tagged with
+   * `workspace` — i.e. channels currently awaiting a reply from that
+   * workspace's CC. Used to target API-error notices at users who are
+   * actually waiting (within the 5min cap; past that, §55 stuck-notice
+   * already covers it).
+   */
+  chatIdsForWorkspace(workspace: string): string[] {
+    const out: string[] = []
+    for (const [chatId, entry] of this.timers) {
+      if (entry.workspace === workspace) out.push(chatId)
+    }
+    return out
+  }
+
   private async fire(chatId: string): Promise<void> {
     try {
       await this.sendTyping(chatId)

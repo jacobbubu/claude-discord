@@ -75,4 +75,14 @@ describe('ErrorNotifier (§55)', () => {
     const n = new ErrorNotifier(send)
     await expect(n.notify('c-1', 'stuck')).resolves.toBeUndefined()
   })
+
+  it('formats an api-error notice with the detail appended (§55b)', async () => {
+    const send = vi.fn().mockResolvedValue({ id: 'm1' })
+    const n = new ErrorNotifier(send)
+    await n.notify('c-1', 'api', 'API Error: … · Rate limited')
+    const content = send.mock.calls[0]![1] as string
+    expect(content).toContain('⚠️')
+    expect(content).toContain('API 错误')
+    expect(content).toContain('Rate limited')
+  })
 })
