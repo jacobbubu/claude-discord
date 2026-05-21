@@ -3,7 +3,7 @@
  * parsing against real temp files. `poll()` is driven directly so no timers.
  */
 
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -138,6 +138,84 @@ describe('TranscriptWatcher (§55b)', () => {
     expect(w.observedCount).toBe(1)
     w.stop()
     expect(w.observedCount).toBe(0)
+  })
+})
+
+describe('TranscriptWatcher §55c — sub-agent transcripts', () => {
+  let dir: string
+  let mainFile: string
+  let subagentsDir: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'transcript-sub-test-'))
+    mainFile = join(dir, 'session.jsonl')
+    // observe(mainFile) derives <dir>/session/subagents
+    subagentsDir = join(dir, 'session', 'subagents')
+  })
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('registers the derived subagents dir on observe', () => {
+    writeFileSync(mainFile, '')
+    const w = new TranscriptWatcher(vi.fn())
+    w.observe(mainFile, '/x')
+    expect(w.watchedDirCount).toBe(1)
+  })
+
+  it('discovers a sub-agent transcript that appears after observe and reports its errors', () => {
+    writeFileSync(mainFile, '')
+    const onApiError = vi.fn()
+    const w = new TranscriptWatcher(onApiError)
+    w.observe(mainFile, '/work') // subagents dir does not exist yet
+    // sub-agent spawns later:
+    mkdirSync(subagentsDir, { recursive: true })
+    writeFileSync(join(subagentsDir, 'agent-abc.jsonl'), apiErrorLine() + '\n')
+    w.poll()
+    expect(onApiError).toHaveBeenCalledTimes(1)
+    expect(onApiError.mock.calls[0]![0]).toBe('/work')
+  })
+
+  it('tails a newly-appeared sub-agent transcript from offset 0', () => {
+    writeFileSync(mainFile, '')
+    const onApiError = vi.fn()
+    const w = new TranscriptWatcher(onApiError)
+    w.observe(mainFile, '/x')
+    mkdirSync(subagentsDir, { recursive: true })
+    // file is born with an error already in it, before the watcher sees it
+    writeFileSync(join(subagentsDir, 'agent-1.jsonl'), apiErrorLine({ status: 529 }) + '\n')
+    w.poll()
+    expect(onApiError).toHaveBeenCalledTimes(1)
+    expect(onApiError.mock.calls[0]![1].status).toBe(529)
+  })
+
+  it('does not replay history of sub-agent transcripts present at observe-time', () => {
+    mkdirSync(subagentsDir, { recursive: true })
+    writeFileSync(
+      join(subagentsDir, 'agent-old.jsonl'),
+      apiErrorLine() + '\n' + apiErrorLine() + '\n',
+    )
+    writeFileSync(mainFile, '')
+    const onApiError = vi.fn()
+    const w = new TranscriptWatcher(onApiError)
+    w.observe(mainFile, '/x') // pre-existing agent file → tailed from EOF
+    w.poll()
+    expect(onApiError).not.toHaveBeenCalled()
+    appendFileSync(join(subagentsDir, 'agent-old.jsonl'), apiErrorLine() + '\n')
+    w.poll()
+    expect(onApiError).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores agent-*.meta.json siblings', () => {
+    writeFileSync(mainFile, '')
+    const onApiError = vi.fn()
+    const w = new TranscriptWatcher(onApiError)
+    w.observe(mainFile, '/x')
+    mkdirSync(subagentsDir, { recursive: true })
+    writeFileSync(join(subagentsDir, 'agent-z.meta.json'), '{"not":"a transcript"}\n')
+    w.poll()
+    expect(onApiError).not.toHaveBeenCalled()
+    expect(w.observedCount).toBe(1) // only the main transcript
   })
 })
 

@@ -15,9 +15,16 @@
  *
  * `poll()` is callable directly so tests don't need real timers; `start()`
  * drives it on an interval in production.
+ *
+ * §55c (issue #143): a sub-agent's API errors land in its own
+ * `<session>/subagents/agent-*.jsonl` — never in the main transcript, and the
+ * cc_tool_trace path is always the *main* transcript. So `observe()` also
+ * registers the derived `subagents/` directory and `poll()` auto-discovers +
+ * tails sub-agent transcripts as they appear.
  */
 
-import { closeSync, openSync, readSync, statSync } from 'node:fs'
+import { closeSync, openSync, readdirSync, readSync, statSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { log } from '../shared/logger.ts'
 
 /** How often to scan observed transcripts for appended lines. */
@@ -53,6 +60,8 @@ export type TranscriptWatcherOpts = {
 export class TranscriptWatcher {
   private readonly pollMs: number
   private readonly entries = new Map<string, Entry>()
+  /** §55c: derived `subagents/` dirs → cwd, polled for new agent-*.jsonl. */
+  private readonly subagentDirs = new Map<string, string>()
   private timer: ReturnType<typeof setInterval> | null = null
 
   constructor(
@@ -65,24 +74,45 @@ export class TranscriptWatcher {
   }
 
   /**
-   * Start (idempotently) tailing `transcriptPath`. The tail begins at the
-   * file's current EOF — pre-existing lines are never reported. Called on
-   * every `cc_tool_trace`, so it must stay cheap + idempotent for an
-   * already-observed path.
+   * Start (idempotently) tailing `transcriptPath` (a main session transcript)
+   * and register this session's `subagents/` directory. Called on every
+   * `cc_tool_trace`, so it must stay cheap + idempotent.
    */
   observe(transcriptPath: string, cwd: string): void {
-    if (this.entries.has(transcriptPath)) return
-    let offset = 0
-    try {
-      offset = statSync(transcriptPath).size
-    } catch (e) {
-      // File not there yet — start at 0; scan() tolerates a missing file.
-      log.debug(`transcript-watcher: stat ${transcriptPath} failed: ${e}`)
+    this.observeFile(transcriptPath, cwd, false)
+
+    // §55c (issue #143): a sub-agent's API errors go to its own
+    // <session>/subagents/agent-*.jsonl, and the cc_tool_trace path is always
+    // the *main* transcript — so we derive + watch the subagents dir here.
+    const dir = subagentsDirFor(transcriptPath)
+    if (dir && !this.subagentDirs.has(dir)) {
+      this.subagentDirs.set(dir, cwd)
+      // Sub-agent transcripts already present when we start watching → tail
+      // from EOF (skip history). Ones appearing later are picked up from
+      // offset 0 by poll().
+      for (const f of listAgentFiles(dir)) {
+        this.observeFile(join(dir, f), cwd, false)
+      }
     }
-    this.entries.set(transcriptPath, { cwd, offset, partial: '' })
-    log.debug(
-      `transcript-watcher: observing ${transcriptPath} (cwd=${cwd}, from byte ${offset})`,
-    )
+  }
+
+  /**
+   * Add `path` to the tail set if not already tracked. `fromStart=false`
+   * tails from the current EOF (skip history); `true` tails from offset 0.
+   */
+  private observeFile(path: string, cwd: string, fromStart: boolean): void {
+    if (this.entries.has(path)) return
+    let offset = 0
+    if (!fromStart) {
+      try {
+        offset = statSync(path).size
+      } catch (e) {
+        // File not there yet — start at 0; scan() tolerates a missing file.
+        log.debug(`transcript-watcher: stat ${path} failed: ${e}`)
+      }
+    }
+    this.entries.set(path, { cwd, offset, partial: '' })
+    log.debug(`transcript-watcher: observing ${path} (cwd=${cwd}, from byte ${offset})`)
   }
 
   /** Begin the poll loop. No-op if already started. */
@@ -99,15 +129,29 @@ export class TranscriptWatcher {
       this.timer = null
     }
     this.entries.clear()
+    this.subagentDirs.clear()
   }
 
-  /** Test hook: number of transcripts currently observed. */
+  /** Test hook: number of transcript files currently tailed. */
   get observedCount(): number {
     return this.entries.size
   }
 
-  /** Scan every observed transcript once for newly-appended lines. */
+  /** Test hook: number of `subagents/` directories being watched. */
+  get watchedDirCount(): number {
+    return this.subagentDirs.size
+  }
+
+  /** Scan every observed transcript once for newly-appended lines, after
+   *  discovering sub-agent transcripts that appeared since the last poll. */
   poll(): void {
+    // §55c: pick up sub-agent transcripts spawned since the last poll.
+    for (const [dir, cwd] of this.subagentDirs) {
+      for (const f of listAgentFiles(dir)) {
+        const p = join(dir, f)
+        if (!this.entries.has(p)) this.observeFile(p, cwd, true)
+      }
+    }
     for (const [path, entry] of this.entries) {
       try {
         this.scan(path, entry)
@@ -144,6 +188,27 @@ export class TranscriptWatcher {
       const info = parseApiError(line)
       if (info) this.onApiError(entry.cwd, info)
     }
+  }
+}
+
+/**
+ * Derive a session's `subagents/` directory from its main transcript path:
+ * `<dir>/<session-id>.jsonl` → `<dir>/<session-id>/subagents`. Returns null
+ * when the path isn't a `.jsonl`.
+ */
+function subagentsDirFor(transcriptPath: string): string | null {
+  if (!transcriptPath.endsWith('.jsonl')) return null
+  const base = basename(transcriptPath).slice(0, -'.jsonl'.length)
+  return join(dirname(transcriptPath), base, 'subagents')
+}
+
+/** List `agent-*.jsonl` files (sub-agent transcripts) in `dir`; returns []
+ *  if the dir doesn't exist yet. Sibling `agent-*.meta.json` are skipped. */
+function listAgentFiles(dir: string): string[] {
+  try {
+    return readdirSync(dir).filter(f => f.startsWith('agent-') && f.endsWith('.jsonl'))
+  } catch {
+    return []
   }
 }
 
