@@ -188,6 +188,9 @@ const TOOL_DEFS = [
 export const INSTRUCTIONS: readonly string[] = [
   'The sender reads Discord, not this session. Anything you want them to see must go through the reply tool — your transcript output never reaches their chat.',
   'Messages from Discord arrive as <channel source="discord" chat_id="..." message_id="..." user="..." ts="...">. Reply with the reply tool — pass chat_id back.',
+  // §56 (issue #146): route by source. Habit-routing a TUI input to Discord
+  // after a run of Discord messages is a recurring misroute.
+  'A message WITHOUT a <channel> wrapper comes from the local terminal (TUI) operator, not Discord — answer it as normal transcript output and do NOT call the reply tool for it. Route every message by its own source: a TUI message gets a TUI answer, a Discord <channel> message gets a reply. After a run of Discord messages, do not habit-route a following TUI input to Discord.',
   // §25: surface intent before tools so the auto-thread trace has context.
   'When answering needs tools (Bash / Read / Edit / Grep / WebFetch / ...), FIRST send a short reply (≤2 sentences) stating your intent or plan, THEN run the tools, THEN send a follow-up reply with the result (or edit_message the intent reply). The daemon auto-collects each tool call into a thread under your channel reply — without the intent line the user sees a thread of tool I/O with no "why".',
   'For LONG replies (multi-paragraph reasoning, code explanations) in a GUILD channel: first reply with a SHORT conclusion via reply (note the returned message_id), then call thread_reply(chat_id, message_id, name, full_detail). Use the returned thread_id as chat_id for any follow-up reply / edit_message calls that should land in the thread.',
