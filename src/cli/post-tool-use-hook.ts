@@ -185,6 +185,7 @@ async function main(): Promise<void> {
     tool_name?: string
     tool_input?: unknown
     tool_response?: unknown
+    transcript_path?: string
   } = {}
   try {
     payload = JSON.parse(raw)
@@ -206,6 +207,11 @@ async function main(): Promise<void> {
     tool_response: compactToolResponse(payload.tool_response),
     status: detectStatus(payload.tool_response),
     cwd: process.cwd(),
+    // §55b (issue #140): forward CC's transcript path so the daemon can tail
+    // it for API-error records. Present on every CC hook payload.
+    ...(typeof payload.transcript_path === 'string' && payload.transcript_path.length > 0
+      ? { transcript_path: payload.transcript_path }
+      : {}),
   }
   await sendTrace(trace)
   process.exit(0)

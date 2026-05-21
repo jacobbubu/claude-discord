@@ -39,6 +39,7 @@ import {
 } from './socket-server.ts'
 import { dispatchToolCall, type ToolContext } from './tool-handlers.ts'
 import { ToolTraceRelay } from './tool-trace.ts'
+import { TranscriptWatcher } from './transcript-watcher.ts'
 import { TypingHeartbeat } from './typing-heartbeat.ts'
 
 export async function runDaemon(): Promise<void> {
@@ -104,6 +105,30 @@ export async function runDaemon(): Promise<void> {
     registry.onWorkspaceRemoved(name => typingHeartbeat.stopByWorkspace(name))
   }
 
+  // §55b (issue #140): tail CC transcripts for Anthropic API errors (429 /
+  // 529 / auth) that hit CC *before* it reaches the plugin — invisible to the
+  // socket protocol. On a hit, notify the channels currently awaiting a reply
+  // from that workspace (within the 5min cap; past that, §55 stuck-notice
+  // already covers it). Transcript path arrives via cc_tool_trace.
+  const transcriptWatcher = gateway
+    ? new TranscriptWatcher((cwd, info) => {
+        const ws = registry.list().find(c => c.cwd === cwd)?.workspace
+        if (!ws) {
+          log.debug(`transcript-watcher: no workspace for cwd=${cwd}; dropping API-error notice`)
+          return
+        }
+        const chatIds = typingHeartbeat?.chatIdsForWorkspace(ws) ?? []
+        if (chatIds.length === 0) {
+          log.debug(`transcript-watcher: API error for ${ws} but no channel awaiting a reply`)
+          return
+        }
+        for (const chatId of chatIds) {
+          void errorNotifier?.notify(chatId, 'api', info.text)
+        }
+      })
+    : null
+  transcriptWatcher?.start()
+
   // Build the real tool dispatcher (or echo fallback if gateway absent).
   const toolDispatcher: ToolCallHandler = gateway
     ? async (workspace, tool, args) => {
@@ -154,7 +179,14 @@ export async function runDaemon(): Promise<void> {
   // thread create + send; degraded mode (no gateway) drops traces silently.
   const traceRelay = gateway ? new ToolTraceRelay(gateway, registry) : null
   const ccToolTraceHandler: CcToolTraceHandler = traceRelay
-    ? msg => traceRelay.handle(msg)
+    ? msg => {
+        // §55b: learn this workspace's transcript path so the watcher can
+        // tail it for API errors. cc_tool_trace fires early in every turn.
+        if (transcriptWatcher && msg.transcript_path && msg.cwd) {
+          transcriptWatcher.observe(msg.transcript_path, msg.cwd)
+        }
+        traceRelay.handle(msg)
+      }
     : () => {
         /* no gateway — nothing we can do with a trace */
       }
@@ -313,6 +345,7 @@ export async function runDaemon(): Promise<void> {
     approvalWatcher.stop()
     permissionRelay?.stop()
     typingHeartbeat?.stopAll()
+    transcriptWatcher?.stop()
     routing.stopWatching()
     void sockServer
       .close()

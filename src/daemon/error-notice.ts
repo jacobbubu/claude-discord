@@ -28,12 +28,13 @@ const DEFAULT_THROTTLE_MS = 60_000
  *  a Discord error message shouldn't dump a wall of text on the user. */
 const DETAIL_MAX = 300
 
-export type ErrorNoticeKind = 'stuck' | 'file' | 'send'
+export type ErrorNoticeKind = 'stuck' | 'file' | 'send' | 'api'
 
 const PREFIX: Record<ErrorNoticeKind, string> = {
   stuck: '⚠️ 已经 5 分钟没有收到 Claude Code 的回复，可能卡住或被限流了。',
   file: '⚠️ 回复中的文件处理失败，消息没能发出',
   send: '⚠️ 回复发送失败',
+  api: '⚠️ Claude Code 遇到 API 错误',
 }
 
 export type ErrorNotifierOpts = {
@@ -72,6 +73,7 @@ export class ErrorNotifier {
 
     let content = PREFIX[kind]
     if (kind !== 'stuck' && detail) {
+      // file / send / api all carry a detail string after the prefix.
       const trimmed = detail.length > DETAIL_MAX ? `${detail.slice(0, DETAIL_MAX)}…` : detail
       content += `：${trimmed}`
     }

@@ -165,4 +165,15 @@ describe('TypingHeartbeat (§33)', () => {
     expect(() => vi.advanceTimersByTime(500)).not.toThrow()
     expect(hb.activeCount).toBe(0)
   })
+
+  it('§55b: chatIdsForWorkspace returns only chats tagged with that workspace', () => {
+    const hb = new TypingHeartbeat(vi.fn(), { intervalMs: 100, maxMs: 10_000 })
+    hb.start('c-1', 'ws-a')
+    hb.start('c-2', 'ws-a')
+    hb.start('c-3', 'ws-b')
+    hb.start('c-4') // untagged
+    expect(hb.chatIdsForWorkspace('ws-a').sort()).toEqual(['c-1', 'c-2'])
+    expect(hb.chatIdsForWorkspace('ws-b')).toEqual(['c-3'])
+    expect(hb.chatIdsForWorkspace('ws-none')).toEqual([])
+  })
 })

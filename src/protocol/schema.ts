@@ -169,6 +169,12 @@ export const CcToolTraceSchema = z.object({
   tool_response: z.string(),
   status: z.enum(['ok', 'error']),
   cwd: z.string().optional(),
+  // §55b (issue #140): absolute path to CC's session transcript JSONL, taken
+  // from the PostToolUse hook payload. Lets the daemon tail the transcript for
+  // API-error records (rate-limit / overload / auth) and surface them to
+  // Discord — those errors hit CC before it calls the plugin, so the socket
+  // protocol can't see them any other way. Optional → back-compatible.
+  transcript_path: z.string().optional(),
 })
 export type CcToolTraceMsg = z.infer<typeof CcToolTraceSchema>
 
