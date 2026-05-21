@@ -44,6 +44,12 @@ describe('mcp-server instructions', () => {
     expect(joined).toMatch(/up to 10 embeds/i)
   })
 
+  it('§56: routes non-<channel> (TUI) messages to transcript output, not reply', () => {
+    expect(joined).toMatch(/WITHOUT a <channel>/)
+    expect(joined).toMatch(/(TUI|terminal)/)
+    expect(joined).toMatch(/habit-route/i)
+  })
+
   it('§45: mentions attachment://<name> + files for inline images', () => {
     expect(joined).toMatch(/attachment:\/\//)
     expect(joined).toMatch(/files:/)
