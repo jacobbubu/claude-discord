@@ -54,4 +54,9 @@ describe('mcp-server instructions', () => {
     expect(joined).toMatch(/attachment:\/\//)
     expect(joined).toMatch(/files:/)
   })
+
+  it('§57: directs Discord turns to discord_ask_question instead of AskUserQuestion', () => {
+    expect(joined).toMatch(/discord_ask_question/)
+    expect(joined).toMatch(/AskUserQuestion/)
+  })
 })

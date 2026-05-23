@@ -21,6 +21,7 @@ import {
   type MessageCreateOptions,
 } from 'discord.js'
 import { readAccessFile } from './access-control.ts'
+import type { AskQuestionOption, AskQuestionRelay } from './ask-question-relay.ts'
 import type { DiscordGateway } from './discord-gateway.ts'
 import type { ErrorNotifier } from './error-notice.ts'
 import type { RingBufferMap } from './ring-buffer.ts'
@@ -215,6 +216,9 @@ export type ToolContext = {
    *  notice to the source channel so the user sees the failure even if
    *  Claude Code doesn't relay the tool error itself. */
   errorNotifier?: ErrorNotifier
+  /** §57 (issue #148): Discord-side multi-choice picker — backs the
+   *  `discord_ask_question` MCP tool. */
+  askQuestionRelay?: AskQuestionRelay
   /** §35: notified on successful reply-class tool call. Daemon wires this to
    *  the workspace conn's `startSunset()` so the turn moves from active →
    *  sunset, and after the tail timer fires → idle (defers subsequent
@@ -620,6 +624,57 @@ export async function toolThreadReply(
   }
 }
 
+/**
+ * §57 (issue #148): Discord-side multi-choice picker. CC's built-in
+ * `AskUserQuestion` renders only in the local TUI — Discord-driven turns
+ * lose the question. This tool renders the question + options as Discord
+ * buttons and blocks until the user clicks (or the request times out).
+ */
+export async function toolDiscordAskQuestion(
+  ctx: ToolContext,
+  args: Record<string, unknown>,
+): Promise<ToolOutcome> {
+  const chatId = args.chat_id as string
+  const question = args.question as string
+  const optionsRaw = args.options as unknown
+  const header = args.header as string | undefined
+
+  if (typeof chatId !== 'string' || chatId.length === 0) return fail('chat_id required')
+  if (typeof question !== 'string' || question.length === 0) return fail('question required')
+  if (!Array.isArray(optionsRaw)) return fail('options must be an array')
+  if (optionsRaw.length < 2) return fail('need at least 2 options')
+
+  const options: AskQuestionOption[] = []
+  for (let i = 0; i < optionsRaw.length; i++) {
+    const o = optionsRaw[i]
+    if (typeof o !== 'object' || o == null) return fail(`options[${i}] must be an object`)
+    const label = (o as Record<string, unknown>).label
+    const description = (o as Record<string, unknown>).description
+    if (typeof label !== 'string' || label.length === 0) {
+      return fail(`options[${i}].label required (string)`)
+    }
+    if (description != null && typeof description !== 'string') {
+      return fail(`options[${i}].description must be a string`)
+    }
+    options.push({
+      label,
+      description: typeof description === 'string' ? description : undefined,
+    })
+  }
+
+  // Mirror reply's access gate — only allowlisted channels.
+  const ch = await fetchTextChannel(ctx, chatId)
+  if (!ch) return fail(`channel ${chatId} not text-based or not allowed`)
+
+  if (!ctx.askQuestionRelay) {
+    return fail('discord_ask_question requires the Discord gateway')
+  }
+
+  const r = await ctx.askQuestionRelay.ask(chatId, question, options, { header })
+  if (!r.ok) return fail(r.error)
+  return { ok: true, result: JSON.stringify({ index: r.index, label: r.label }) }
+}
+
 export async function dispatchToolCall(
   ctx: ToolContext,
   tool: string,
@@ -638,6 +693,8 @@ export async function dispatchToolCall(
       return toolDownloadAttachment(ctx, args)
     case 'thread_reply':
       return toolThreadReply(ctx, args)
+    case 'discord_ask_question':
+      return toolDiscordAskQuestion(ctx, args)
     default:
       log.warn(`unknown tool: ${tool}`)
       return fail(`unknown tool: ${tool}`)
