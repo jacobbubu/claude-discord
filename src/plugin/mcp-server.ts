@@ -178,6 +178,35 @@ const TOOL_DEFS = [
       required: ['chat_id', 'parent_message_id', 'name', 'content'],
     },
   },
+  {
+    // §57 (issue #148): Discord-side replacement for the built-in
+    // AskUserQuestion, whose picker only renders in the local TUI.
+    name: 'discord_ask_question',
+    description:
+      'Render a multiple-choice question as a Discord button message and block until the user clicks. Use this for any decision point in a Discord-sourced turn INSTEAD of the built-in AskUserQuestion (whose picker only renders in the local TUI — Discord users see nothing). Returns a JSON string { index, label } with the chosen option. Up to 25 options (Discord button cap, matching AskUserQuestion).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chat_id: { type: 'string', description: 'Channel to send the question to (the source chat_id of the Discord-sourced turn).' },
+        question: { type: 'string', description: 'The question text shown to the user.' },
+        options: {
+          type: 'array',
+          minItems: 2,
+          maxItems: 25,
+          items: {
+            type: 'object',
+            properties: {
+              label: { type: 'string', description: 'Short label shown on the button (truncated to 80 chars).' },
+              description: { type: 'string', description: 'Optional longer description shown alongside the button label in the embed.' },
+            },
+            required: ['label'],
+          },
+        },
+        header: { type: 'string', description: 'Optional short header above the question.' },
+      },
+      required: ['chat_id', 'question', 'options'],
+    },
+  },
 ] as const
 
 /**
@@ -191,6 +220,9 @@ export const INSTRUCTIONS: readonly string[] = [
   // §56 (issue #146): route by source. Habit-routing a TUI input to Discord
   // after a run of Discord messages is a recurring misroute.
   'A message WITHOUT a <channel> wrapper comes from the local terminal (TUI) operator, not Discord — answer it as normal transcript output and do NOT call the reply tool for it. Route every message by its own source: a TUI message gets a TUI answer, a Discord <channel> message gets a reply. After a run of Discord messages, do not habit-route a following TUI input to Discord.',
+  // §57 (issue #148): Discord-side replacement for the built-in AskUserQuestion
+  // (whose picker only renders in the local TUI).
+  'For a Discord-sourced turn, when you would otherwise call the built-in AskUserQuestion, call discord_ask_question(chat_id, question, options) instead. The AskUserQuestion picker only renders in the local TUI — Discord users see nothing. discord_ask_question renders the question as a Discord button message and returns the chosen option as JSON { index, label }. Up to 25 options.',
   // §25: surface intent before tools so the auto-thread trace has context.
   'When answering needs tools (Bash / Read / Edit / Grep / WebFetch / ...), FIRST send a short reply (≤2 sentences) stating your intent or plan, THEN run the tools, THEN send a follow-up reply with the result (or edit_message the intent reply). The daemon auto-collects each tool call into a thread under your channel reply — without the intent line the user sees a thread of tool I/O with no "why".',
   'For LONG replies (multi-paragraph reasoning, code explanations) in a GUILD channel: first reply with a SHORT conclusion via reply (note the returned message_id), then call thread_reply(chat_id, message_id, name, full_detail). Use the returned thread_id as chat_id for any follow-up reply / edit_message calls that should land in the thread.',

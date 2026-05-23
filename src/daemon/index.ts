@@ -15,6 +15,7 @@ import { attachFileSink, log } from '../shared/logger.ts'
 import { readPackageVersion } from '../shared/package-version.ts'
 import { resolvePaths } from '../shared/paths.ts'
 import { startApprovalWatcher } from './approval-watcher.ts'
+import { AskQuestionRelay } from './ask-question-relay.ts'
 import { startDiscordGateway } from './discord-gateway.ts'
 import { ErrorNotifier } from './error-notice.ts'
 import { makeInboundHandler } from './inbound-router.ts'
@@ -139,6 +140,7 @@ export async function runDaemon(): Promise<void> {
           workspace,
           typingHeartbeat: typingHeartbeat ?? undefined,
           errorNotifier: errorNotifier ?? undefined,
+          askQuestionRelay: askQuestionRelay ?? undefined,
           // §35: on successful reply-class tool, slide the workspace's turn
           // into sunset (30s tail) so subsequent terminal-driven tool calls
           // get correctly deferred to TUI / dropped from trace.
@@ -160,6 +162,11 @@ export async function runDaemon(): Promise<void> {
   const permissionRelay = gateway
     ? new PermissionRelay(gateway, registry, paths)
     : null
+
+  // §57 (issue #148): Discord-side multi-choice picker backing the
+  // `discord_ask_question` MCP tool. Same shape as permission-relay —
+  // button click resolves the pending tool call.
+  const askQuestionRelay = gateway ? new AskQuestionRelay(gateway) : null
 
   const permissionHandler: PermissionRequestHandler = permissionRelay
     ? async (workspace, msg) => permissionRelay.handlePluginRequest(workspace, msg)
@@ -254,9 +261,13 @@ export async function runDaemon(): Promise<void> {
       routing,
       ringBuffers,
       paths,
-      buttonIntercept: permissionRelay
-        ? async i => permissionRelay.handleButton(i)
-        : undefined,
+      // §57: chain ask-question buttons (customId `aq:…`) before permission
+      // buttons (customId `perm:…`) — disjoint prefixes, order is robustness.
+      buttonIntercept: async i => {
+        if (askQuestionRelay && (await askQuestionRelay.handleButton(i))) return true
+        if (permissionRelay && (await permissionRelay.handleButton(i))) return true
+        return false
+      },
     })
     gateway.client.on('interactionCreate', interactionHandler)
 
@@ -344,6 +355,7 @@ export async function runDaemon(): Promise<void> {
     log.info(`received ${signal}, shutting down`)
     approvalWatcher.stop()
     permissionRelay?.stop()
+    askQuestionRelay?.stop()
     typingHeartbeat?.stopAll()
     transcriptWatcher?.stop()
     routing.stopWatching()

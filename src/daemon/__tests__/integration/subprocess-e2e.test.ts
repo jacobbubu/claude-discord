@@ -95,10 +95,11 @@ describe('subprocess e2e (real daemon + real plugin + MCP Client)', () => {
     client = new Client({ name: 'mock-cc', version: '0.0.1' }, { capabilities: {} })
     await client.connect(transport)
 
-    // 3. listTools should return 7 tools (6 daemon-routed + whoami local)
+    // 3. listTools should return 8 tools (7 daemon-routed + whoami local)
     const tools = await client.listTools()
     const names = tools.tools.map(t => t.name).sort()
     expect(names).toEqual([
+      'discord_ask_question',
       'download_attachment',
       'edit_message',
       'fetch_messages',
